@@ -79,15 +79,37 @@ export function estimateDeliveryDate(createdAt: Date, estimatedDays = 5): string
   return addBusinessDays(createdAt, Math.max(1, estimatedDays)).toISOString();
 }
 
-export function buildShippingAddressSnapshot(address: any) {
+export function normalizeShippingAddress(address: any, fallbackEmail?: string) {
+  if (!address || typeof address !== 'object') return null;
+
+  const fullName = address.name?.trim() || `${address.firstName || ''} ${address.lastName || ''}`.trim();
+  const [firstName, ...lastParts] = fullName.split(' ').filter(Boolean);
+  const lastName = lastParts.join(' ');
+  const email = address.email || address.email_address || fallbackEmail || '';
+
   return {
-    name: `${address?.firstName || ''} ${address?.lastName || ''}`.trim(),
-    phone: address?.phone || '',
-    address: address?.address || '',
-    city: address?.city || '',
-    state: address?.state || '',
-    pincode: address?.pinCode || '',
-    email: address?.email || '',
+    firstName: firstName || '',
+    lastName: lastName || '',
+    email,
+    phone: address.phone || address.phoneNumber || '',
+    address: address.address || address.street || '',
+    city: address.city || '',
+    state: address.state || '',
+    pinCode: address.pinCode || address.pincode || address.postalCode || '',
+    rawName: fullName,
+  };
+}
+
+export function buildShippingAddressSnapshot(address: any) {
+  const normalized = normalizeShippingAddress(address);
+  return {
+    name: `${normalized?.firstName || ''} ${normalized?.lastName || ''}`.trim() || normalized?.rawName || '',
+    phone: normalized?.phone || '',
+    address: normalized?.address || '',
+    city: normalized?.city || '',
+    state: normalized?.state || '',
+    pincode: normalized?.pinCode || '',
+    email: normalized?.email || '',
   };
 }
 
@@ -152,17 +174,35 @@ export async function getLatestStatusHistory(orderId: string) {
   return result.rows;
 }
 
-export function validateShippingAddress(address: any): { valid: boolean; errors: string[] } {
+export function validateShippingAddress(address: any, fallbackEmail?: string): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
+  const normalized = normalizeShippingAddress(address, fallbackEmail);
 
-  if (!address?.firstName || address.firstName.length < 2) errors.push('Invalid first name');
-  if (!address?.lastName || address.lastName.length < 2) errors.push('Invalid last name');
-  if (!address?.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address.email)) errors.push('Invalid email');
-  if (!address?.phone || !/^[0-9]{10}$/.test(address.phone)) errors.push('Invalid phone number');
-  if (!address?.address || address.address.length < 5) errors.push('Invalid address');
-  if (!address?.city || address.city.length < 2) errors.push('Invalid city');
-  if (!address?.state || address.state.length < 2) errors.push('Invalid state');
-  if (!address?.pinCode || !/^[0-9]{6}$/.test(address.pinCode)) errors.push('Invalid PIN code');
+  if (!normalized) {
+    return { valid: false, errors: ['Invalid shipping address'] };
+  }
+
+  if (!normalized.firstName || normalized.firstName.length < 2) {
+    errors.push('Invalid name');
+  }
+  if (!normalized.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized.email)) {
+    errors.push('Invalid email');
+  }
+  if (!normalized.phone || !/^[0-9]{10}$/.test(normalized.phone)) {
+    errors.push('Invalid phone number');
+  }
+  if (!normalized.address || normalized.address.length < 3) {
+    errors.push('Invalid address');
+  }
+  if (!normalized.city || normalized.city.length < 1) {
+    errors.push('Invalid city');
+  }
+  if (!normalized.state || normalized.state.length < 1) {
+    errors.push('Invalid state');
+  }
+  if (!normalized.pinCode || !/^[0-9]{6}$/.test(normalized.pinCode)) {
+    errors.push('Invalid PIN code');
+  }
 
   return {
     valid: errors.length === 0,

@@ -270,6 +270,8 @@ export const createTables = async () => {
       await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS expected_refund_date TIMESTAMP;`);
       await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_completed_at TIMESTAMP;`);
       await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_meta JSONB DEFAULT '{}';`);
+      await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_name VARCHAR(255);`);
+      await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_email VARCHAR(255);`);
       await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancel_reason TEXT;`);
       await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancel_reason_type VARCHAR(255);`);
       await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(255);`);
@@ -335,6 +337,8 @@ export const createTables = async () => {
     } catch (conversionError) {
       console.error('Error converting user ID column types:', conversionError);
     }
+
+    // Keep product and order item IDs as UUID for current schema compatibility
 
     console.log('\n✅ All tables created successfully!');
   } catch (error) {

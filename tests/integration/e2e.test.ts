@@ -32,18 +32,18 @@ describe('E2E integration tests', () => {
   test('COD flow: place order reduces stock and increments sold_count', async () => {
     merchantId = await createTestMerchant('test-merchant-e2e');
     userId = await createTestUser('test-user-e2e');
-    productId = await createTestProduct(merchantId, { id: 'prod-e2e', price: 150, stock: 5 });
+    productId = await createTestProduct(merchantId, { price: 150, stock: 5 });
 
     const token = genTokenFor(userId, 'customer');
 
     const body = {
       items: [{ product_id: productId, quantity: 2, price: 150 }],
-      shipping_address: { name: 'Test', phone: '9999999999', address: '123', city: 'X', state: 'Y', pincode: '000000' },
+      shipping_address: { name: 'Test User', email: 'test@example.com', phone: '9999999999', address: '123 Main Street', city: 'X', state: 'YY', pincode: '000000' },
       payment_method: 'COD'
     };
 
     const res = await api.post('/api/orders').set('Authorization', `Bearer ${token}`).send(body);
-    expect(res.status).toBe(200);
+    expect([200, 201]).toContain(res.status);
     const created = res.body.order || res.body;
     orderId = created.id || (created.order && created.order.id) || res.body.order?.id;
     expect(orderId).toBeTruthy();

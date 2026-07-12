@@ -10,6 +10,7 @@ import {
   buildOrderItemSnapshot,
   buildProductSnapshot,
   buildShippingAddressSnapshot,
+  normalizeShippingAddress,
   canCustomerCancel,
   calculateItemSubtotal,
   calculateOrderAmounts,
@@ -141,9 +142,9 @@ async function safeNotifyUsers(
 
 async function getOrderSummaryById(orderId: string, userId: string) {
   const result = await query(
-    `SELECT o.*, 
-      COALESCE(json_agg(
-        json_build_object(
+    `SELECT o.*,
+      (
+        SELECT COALESCE(jsonb_agg(DISTINCT jsonb_build_object(
           'id', oi.id,
           'product_id', oi.product_id,
           'quantity', oi.quantity,
@@ -153,11 +154,19 @@ async function getOrderSummaryById(orderId: string, userId: string) {
           'size', oi.product_snapshot->>'size',
           'color', oi.product_snapshot->>'color',
           'snapshot', oi.product_snapshot
-        )
-      ) FILTER (WHERE oi.id IS NOT NULL), '[]') as items,
-      COALESCE(MAX(COALESCE(m.shop_name, m.name)), 'SHDWMEN') as seller_name,
-      COALESCE(json_agg(
-        DISTINCT jsonb_build_object(
+        )) FILTER (WHERE oi.id IS NOT NULL), '[]'::jsonb)
+        FROM order_items oi JOIN products p ON oi.product_id = p.id
+        WHERE oi.order_id = o.id
+      ) as items,
+      (
+        SELECT COALESCE(MAX(COALESCE(m.shop_name, m.name)), 'SHDWMEN')
+        FROM order_items oi2
+        JOIN products p2 ON oi2.product_id = p2.id
+        LEFT JOIN users m ON p2.merchant_id = m.id
+        WHERE oi2.order_id = o.id
+      ) as seller_name,
+      (
+        SELECT COALESCE(jsonb_agg(jsonb_build_object(
           'id', osh.id,
           'previous_status', osh.previous_status,
           'new_status', osh.new_status,
@@ -165,15 +174,11 @@ async function getOrderSummaryById(orderId: string, userId: string) {
           'changed_by', osh.changed_by,
           'changed_by_role', osh.changed_by_role,
           'created_at', osh.created_at
-        )
-      ) FILTER (WHERE osh.id IS NOT NULL), '[]') as status_history
+        )) FILTER (WHERE osh.id IS NOT NULL), '[]'::jsonb)
+        FROM order_status_history osh WHERE osh.order_id = o.id
+      ) as status_history
      FROM orders o
-     LEFT JOIN order_items oi ON o.id = oi.order_id
-     LEFT JOIN products p ON oi.product_id = p.id
-    LEFT JOIN users m ON p.merchant_id = m.id
-     LEFT JOIN order_status_history osh ON o.id = osh.order_id
-     WHERE o.id = $1 AND o.user_id = $2
-     GROUP BY o.id`,
+     WHERE o.id = $1 AND o.user_id = $2`,
     [orderId, userId]
   );
 
@@ -289,11 +294,18 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
       }
     }
 
-    const addressValidation = validateShippingAddress(shipping_address);
+    const client = await getClient();
+    const userRowRes = await client.query('SELECT name, email FROM users WHERE id = $1', [userId]);
+    const dbUser = userRowRes.rows[0] || {};
+    const validatedShippingAddress = normalizeShippingAddress(shipping_address, dbUser.email);
+    if (!validatedShippingAddress) {
+      client.release();
+      return res.status(400).json({ error: 'Invalid shipping address payload' });
+    }
+    const addressValidation = validateShippingAddress(validatedShippingAddress, dbUser.email);
     if (!addressValidation.valid) {
       return res.status(400).json({ error: 'Invalid shipping address', details: addressValidation.errors });
     }
-    const client = await getClient();
     try {
       await client.query('BEGIN');
       const postCommitNotifications: Array<{
@@ -362,21 +374,28 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
 
       const { totalAmount } = calculateOrderAmounts(subtotal);
       const orderId = uuidv4();
-      const addressSnapshot = buildShippingAddressSnapshot(shipping_address);
+      const addressSnapshot = buildShippingAddressSnapshot(validatedShippingAddress);
       const orderSnapshot = items.map((item) => buildProductSnapshot(productMap.get(item.product_id), item.quantity));
       const estimatedDeliveryDate = estimateDeliveryDate(new Date(), maxDeliveryDays || 5);
       const merchantIds = Array.from(new Set(products.rows.map((product) => product.merchant_id).filter(Boolean)));
       const dbPaymentMethod = normalizedPaymentMethod === 'COD' ? 'cod' : 'razorpay';
       const dbPaymentStatus = normalizedPaymentMethod === 'COD' ? 'pending' : 'captured';
 
+      // Resolve customer name/email with priority: shipping address -> Clerk/users table -> null
+      const dbUser = (await client.query('SELECT name, email FROM users WHERE id = $1', [userId])).rows[0] || {};
+      const customerName = (addressSnapshot && addressSnapshot.name) || dbUser.name || null;
+      const customerEmail = (addressSnapshot && addressSnapshot.email) || dbUser.email || null;
+
       await client.query(
         `INSERT INTO orders (
-          id, user_id, total_amount, status, payment_method, payment_status, payment_id, razorpay_order_id, razorpay_signature,
+          id, user_id, customer_name, customer_email, total_amount, status, payment_method, payment_status, payment_id, razorpay_order_id, razorpay_signature,
           shipping_address, address_snapshot, order_snapshot, estimated_delivery_date
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
         [
           orderId,
           userId,
+          customerName,
+          customerEmail,
           totalAmount,
           'pending',
           dbPaymentMethod,
@@ -510,6 +529,10 @@ router.post('/:id/cancel', requireAuth, async (req: Request, res: Response) => {
     const { id } = req.params;
     const { cancelReason, cancelReasonType } = req.body as { cancelReason?: string; cancelReasonType?: string };
     const userId = req.auth?.userId;
+    console.log('[ORDERS][CANCEL] — Order ID:', id);
+    console.log('[ORDERS][CANCEL] — User ID:', userId);
+    console.log('[ORDERS][CANCEL] — Body:', req.body);
+    console.log('[ORDERS][CANCEL] payload:', { cancelReason, cancelReasonType });
     const client = await getClient();
     try {
       await client.query('BEGIN');
@@ -533,6 +556,7 @@ router.post('/:id/cancel', requireAuth, async (req: Request, res: Response) => {
       }
 
       const order = orderResult.rows[0];
+      console.log('[ORDERS][CANCEL] — Order:', order);
       const normalizedStatus = normalizeOrderStatus(order.status);
 
       // Check if requester is customer or merchant for this order
@@ -568,34 +592,38 @@ router.post('/:id/cancel', requireAuth, async (req: Request, res: Response) => {
         [id]
       );
       for (const item of itemsResult.rows) {
-        await client.query(
+        const updateRes = await client.query(
           'UPDATE products SET stock = stock + $1, sold_count = GREATEST(0, sold_count - $1) WHERE id = $2',
           [item.quantity, item.product_id]
         );
+        if (updateRes.rowCount === 0) {
+          throw new Error(`Product not found for order item ${item.id}`);
+        }
       }
 
       const refundStatus: RefundStatus | null = order.payment_method === 'cod' ? null : 'initiated';
       const refundId = order.payment_method === 'cod' ? null : `rfnd_${uuidv4().replace(/-/g, '')}`;
       const expectedRefundDate = order.payment_method === 'cod' ? null : addBusinessDays(new Date(), 10).toISOString();
+      const isRefundable = order.payment_method !== 'cod';
 
-      await client.query(
-        `UPDATE orders
-         SET status = 'cancelled',
-             cancelled_at = CURRENT_TIMESTAMP,
-             cancel_reason = $2,
-             cancel_reason_type = $3,
-             cancelled_by = $4,
-             refund_id = COALESCE($5, refund_id),
-             refund_amount = CASE WHEN $6::boolean THEN total_amount ELSE 0 END,
-             refund_status = $7,
-             refund_initiated_at = CASE WHEN $7 IS NOT NULL THEN CURRENT_TIMESTAMP ELSE refund_initiated_at END,
-             expected_refund_date = CASE WHEN $8 IS NOT NULL THEN $8::timestamp ELSE expected_refund_date END,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1`,
-        [id, cancelReason || null, cancelReasonType || null, isMerchant ? 'merchant' : 'customer', refundId, order.payment_method !== 'cod', refundStatus, expectedRefundDate]
-      );
+      if (isRefundable) {
+        await client.query(
+          `UPDATE orders
+           SET status = 'cancelled',
+               cancelled_at = CURRENT_TIMESTAMP,
+               cancel_reason = $2,
+               cancel_reason_type = $3,
+               cancelled_by = $4,
+               refund_id = COALESCE($5, refund_id),
+               refund_amount = total_amount,
+               refund_status = 'initiated',
+               refund_initiated_at = CURRENT_TIMESTAMP,
+               expected_refund_date = $6::timestamp,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [id, cancelReason || null, cancelReasonType || null, isMerchant ? 'merchant' : 'customer', refundId, expectedRefundDate]
+        );
 
-      if (refundId && order.payment_method !== 'cod') {
         await client.query(
           `INSERT INTO refunds (id, order_id, refund_id, refund_amount, refund_status, expected_refund_date, metadata)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -605,6 +633,18 @@ router.post('/:id/cancel', requireAuth, async (req: Request, res: Response) => {
              refund_status = EXCLUDED.refund_status,
              expected_refund_date = EXCLUDED.expected_refund_date`,
           [uuidv4(), id, refundId, order.total_amount, 'initiated', expectedRefundDate, JSON.stringify({ source: 'customer_cancel' })]
+        );
+      } else {
+        await client.query(
+          `UPDATE orders
+           SET status = 'cancelled',
+               cancelled_at = CURRENT_TIMESTAMP,
+               cancel_reason = $2,
+               cancel_reason_type = $3,
+               cancelled_by = $4,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [id, cancelReason || null, cancelReasonType || null, isMerchant ? 'merchant' : 'customer']
         );
       }
 
@@ -663,7 +703,14 @@ router.post('/:id/cancel', requireAuth, async (req: Request, res: Response) => {
       client.release();
     }
   } catch (error) {
-    sendServerError(res, error, 'Failed to cancel order');
+    console.error('Cancel Order Error:', error);
+    if (error instanceof Error) {
+      return res.status(500).json({
+        error: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      });
+    }
+    return res.status(500).json({ error: 'Unknown error' });
   }
 });
 
@@ -673,6 +720,10 @@ router.patch('/:id/status', requireAuth, async (req: Request, res: Response) => 
     const { id } = req.params;
     const { status, cancelReason, cancelReasonType } = req.body;
     const userId = req.auth?.userId;
+    console.log('[ORDERS][STATUS] — Order ID:', id);
+    console.log('[ORDERS][STATUS] — User ID:', userId);
+    console.log('[ORDERS][STATUS] — Body:', req.body);
+    console.log('[ORDERS][STATUS] payload:', { status, cancelReason, cancelReasonType });
 
     if (!ORDER_STATUS_FLOW.includes(normalizeOrderStatus(status))) {
       return res.status(400).json({ error: 'Invalid status' });
@@ -705,13 +756,15 @@ router.patch('/:id/status', requireAuth, async (req: Request, res: Response) => 
       );
 
       const merchantIds = Array.from(new Set(merchantCheck.rows.map((row: any) => row.merchant_id).filter(Boolean)));
-      if (!merchantIds.includes(userId)) {
+      const isMerchant = merchantIds.includes(userId);
+      if (!isMerchant) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Order not found or unauthorized' });
       }
 
       const orderResult = await client.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [id]);
       const order = orderResult.rows[0];
+      console.log('[ORDERS][STATUS] — Order:', order);
       if (!order) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Order not found or unauthorized' });
@@ -723,25 +776,42 @@ router.patch('/:id/status', requireAuth, async (req: Request, res: Response) => 
         return res.json({ message: 'Order status updated', status: normalizedStatus });
       }
 
-      await client.query(
-        `UPDATE orders
-         SET status = $1,
-             delivered_at = CASE WHEN $1 = 'delivered' THEN CURRENT_TIMESTAMP ELSE delivered_at END,
-             cancelled_at = CASE WHEN $1 = 'cancelled' THEN CURRENT_TIMESTAMP ELSE cancelled_at END,
-             refund_status = CASE WHEN $1 = 'refunded' THEN 'completed' ELSE refund_status END,
-             refund_completed_at = CASE WHEN $1 = 'refunded' THEN CURRENT_TIMESTAMP ELSE refund_completed_at END,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $2`,
-        [normalizedStatus, id]
-      );
+      // Build SET clause and params sequentially to avoid ambiguous $n types
+      const params: any[] = [];
+      // $1 = new status
+      params.push(normalizedStatus);
+
+      const setParts: string[] = [];
+      setParts.push(`status = $1`);
+      setParts.push(`delivered_at = CASE WHEN $1::varchar = 'delivered'::varchar THEN CURRENT_TIMESTAMP ELSE delivered_at END`);
+      setParts.push(`cancelled_at = CASE WHEN $1::varchar = 'cancelled'::varchar THEN CURRENT_TIMESTAMP ELSE cancelled_at END`);
+      setParts.push(`refund_status = CASE WHEN $1::varchar = 'refunded'::varchar THEN 'completed'::varchar ELSE refund_status END`);
+      setParts.push(`refund_completed_at = CASE WHEN $1::varchar = 'refunded'::varchar THEN CURRENT_TIMESTAMP ELSE refund_completed_at END`);
 
       if (normalizedStatus === 'cancelled') {
-        // set cancel metadata
-        await client.query(
-          `UPDATE orders SET cancel_reason = $1, cancel_reason_type = $2, cancelled_by = $3, cancelled_at = CURRENT_TIMESTAMP WHERE id = $4`,
-          [cancelReason || null, cancelReasonType || null, 'merchant', id]
-        );
+        // add cancel fields with sequential params
+        params.push(cancelReason || null); // $2
+        params.push(cancelReasonType || null); // $3
+        params.push(isMerchant ? 'merchant' : 'customer'); // $4
+        setParts.push(`cancel_reason = $2`);
+        setParts.push(`cancel_reason_type = $3`);
+        setParts.push(`cancelled_by = $4`);
       }
+
+      setParts.push('updated_at = CURRENT_TIMESTAMP');
+
+      // WHERE id param
+      params.push(id); // next param ($n)
+      const idParamIndex = params.length;
+
+      const updateSetClause = setParts.join(',\n             ');
+
+      await client.query(
+        `UPDATE orders
+         SET ${updateSetClause}
+         WHERE id = $${idParamIndex}`,
+        params
+      );
 
       if (normalizedStatus === 'cancelled' || normalizedStatus === 'returned') {
         const itemsResult = await client.query(
@@ -752,10 +822,13 @@ router.patch('/:id/status', requireAuth, async (req: Request, res: Response) => 
           [id]
         );
         for (const item of itemsResult.rows) {
-          await client.query(
-            'UPDATE products SET stock = stock + $1 WHERE id = $2',
+          const updateRes = await client.query(
+            'UPDATE products SET stock = stock + $1, sold_count = GREATEST(0, sold_count - $1) WHERE id = $2',
             [item.quantity, item.product_id]
           );
+          if (updateRes.rowCount === 0) {
+            throw new Error(`Product not found for order item ${item.id}`);
+          }
         }
 
         if (order.payment_method !== 'cod') {
@@ -843,7 +916,14 @@ router.patch('/:id/status', requireAuth, async (req: Request, res: Response) => 
       client.release();
     }
   } catch (error) {
-    sendServerError(res, error, 'Failed to update order');
+    console.error('Update Order Status Error:', error);
+    if (error instanceof Error) {
+      return res.status(500).json({
+        error: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      });
+    }
+    return res.status(500).json({ error: 'Unknown error' });
   }
 });
 

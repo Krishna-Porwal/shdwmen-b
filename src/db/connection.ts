@@ -29,4 +29,8 @@ export const getClient = async () => {
   return pool.connect();
 };
 
+export async function closeDatabase(): Promise<void> {
+  await pool.end();
+}
+
 export default pool;

@@ -3,6 +3,11 @@ import { v4 as uuidv4 } from 'uuid';
 
 export async function clearTestData() {
   await query('DELETE FROM order_items');
+  await query('DELETE FROM order_status_history');
+  await query('DELETE FROM audit_logs');
+  await query('DELETE FROM refunds');
+  await query('DELETE FROM idempotency_keys');
+  await query('DELETE FROM notifications');
   await query('DELETE FROM orders');
   await query('DELETE FROM products');
   await query("DELETE FROM users WHERE id LIKE 'test-%'");
@@ -21,7 +26,8 @@ export async function createTestMerchant(id?: string) {
 }
 
 export async function createTestProduct(merchantId: string, overrides?: any) {
-  const id = overrides?.id || uuidv4();
+  const uuidRegex = /^[0-9a-fA-F-]{36}$/;
+  const id = overrides?.id && uuidRegex.test(String(overrides.id)) ? overrides.id : uuidv4();
   const name = overrides?.name || 'Test Product';
   const price = overrides?.price ?? 100;
   const stock = overrides?.stock ?? 10;

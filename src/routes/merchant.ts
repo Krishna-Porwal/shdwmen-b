@@ -123,8 +123,8 @@ router.get('/dashboard', requireMerchant, async (req: Request, res: Response) =>
 
     const ordersResult = await query(
       `WITH merchant_orders AS (
-         SELECT DISTINCT o.id, o.total_amount, o.status, o.payment_method, o.created_at, o.shipping_address, o.address_snapshot,
-                u.name as customer_name, u.email as customer_email
+        SELECT DISTINCT o.id, o.total_amount, o.status, o.payment_method, o.created_at, o.shipping_address, o.address_snapshot,
+            COALESCE(o.customer_name, u.name) as customer_name, COALESCE(o.customer_email, u.email) as customer_email
          FROM orders o
          JOIN users u ON o.user_id = u.id
          WHERE EXISTS (
@@ -161,9 +161,11 @@ router.get('/dashboard', requireMerchant, async (req: Request, res: Response) =>
     const totalItems = parseInt(totalItemsResult.rows[0].total_items, 10) || 0;
 
     const recentOrdersResult = await query(
-      `SELECT o.id, o.total_amount, o.status, o.payment_method, o.created_at, u.name as customer_name, u.email as customer_email,
-              COALESCE(json_agg(
-                json_build_object(
+            `SELECT o.id, o.total_amount, o.status, o.payment_method, o.created_at,
+              json_build_object('id', u.id, 'name', COALESCE(o.customer_name, u.name), 'email', COALESCE(o.customer_email, u.email)) as customer_account,
+              COALESCE(o.shipping_address, o.address_snapshot) as shipping_details,
+              COALESCE(jsonb_agg(DISTINCT
+                jsonb_build_object(
                   'id', oi.id,
                   'product_id', oi.product_id,
                   'quantity', oi.quantity,
@@ -173,13 +175,13 @@ router.get('/dashboard', requireMerchant, async (req: Request, res: Response) =>
                   'size', oi.product_snapshot->>'size',
                   'color', oi.product_snapshot->>'color'
                 )
-              ) FILTER (WHERE oi.id IS NOT NULL), '[]') as items
+              ) FILTER (WHERE oi.id IS NOT NULL), '[]'::jsonb) as items
        FROM orders o
        JOIN order_items oi ON o.id = oi.order_id
        JOIN products p ON oi.product_id = p.id
        JOIN users u ON o.user_id = u.id
        WHERE p.merchant_id = $1
-       GROUP BY o.id, u.name, u.email
+       GROUP BY o.id, u.id, u.name, u.email, o.shipping_address, o.address_snapshot
        ORDER BY o.created_at DESC
        LIMIT 10`,
       [merchantId]
@@ -305,7 +307,8 @@ router.get('/orders', requireMerchant, async (req: Request, res: Response) => {
 
     const result = await query(
       `SELECT o.id, o.total_amount, o.status, o.payment_method, o.created_at, o.shipping_address, o.address_snapshot,
-              u.name as customer_name, u.email as customer_email,
+              json_build_object('id', COALESCE(o.user_id, u.id), 'name', COALESCE(o.customer_name, u.name), 'email', COALESCE(o.customer_email, u.email)) as customer_account,
+              COALESCE(o.shipping_address, o.address_snapshot) as shipping_details,
               COALESCE(json_agg(
                 json_build_object(
                   'id', oi.id,
@@ -327,7 +330,7 @@ router.get('/orders', requireMerchant, async (req: Request, res: Response) => {
        ${paymentMethod ? `AND o.payment_method = $${status ? 3 : 2}` : ''}
        ${from ? `AND o.created_at >= $${(status ? 1 : 0) + (paymentMethod ? 1 : 0) + 2}` : ''}
        ${to ? `AND o.created_at <= $${(status ? 1 : 0) + (paymentMethod ? 1 : 0) + (from ? 1 : 0) + 2}` : ''}
-       GROUP BY o.id, u.name, u.email, o.shipping_address, o.address_snapshot
+       GROUP BY o.id, u.id, u.name, u.email, o.shipping_address, o.address_snapshot
        ORDER BY o.created_at DESC`,
       [
         merchantId,
@@ -357,9 +360,10 @@ router.get('/orders/:id', requireMerchant, async (req: Request, res: Response) =
     const merchantId = req.auth?.userId;
 
     const result = await query(
-      `SELECT o.*, u.name as customer_name, u.email as customer_email,
-              COALESCE(json_agg(
-                json_build_object(
+            `SELECT o.*, json_build_object('id', u.id, 'name', COALESCE(o.customer_name, u.name), 'email', COALESCE(o.customer_email, u.email)) as customer_account,
+              COALESCE(o.shipping_address, o.address_snapshot) as shipping_details,
+              COALESCE(json_agg(DISTINCT
+                jsonb_build_object(
                   'id', oi.id,
                   'product_id', oi.product_id,
                   'quantity', oi.quantity,
@@ -376,7 +380,7 @@ router.get('/orders/:id', requireMerchant, async (req: Request, res: Response) =
        JOIN products p ON oi.product_id = p.id
        JOIN users u ON o.user_id = u.id
        WHERE o.id = $1 AND p.merchant_id = $2
-       GROUP BY o.id, u.name, u.email`,
+       GROUP BY o.id, u.id, u.name, u.email, o.shipping_address, o.address_snapshot`,
       [id, merchantId]
     );
 

@@ -292,18 +292,24 @@ router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, Payment
 
       const orderId = uuidv4();
       const addressSnapshot = buildShippingAddressSnapshot(shipping_address);
+      // Resolve customer name/email with priority: shipping address -> users table -> null
+      const dbUserRow = (await client.query('SELECT name, email FROM users WHERE id = $1', [userId])).rows[0] || {};
+      const customerName = (addressSnapshot && addressSnapshot.name) || dbUserRow.name || null;
+      const customerEmail = (addressSnapshot && addressSnapshot.email) || dbUserRow.email || null;
       const orderSnapshot = items.map((item) => buildProductSnapshot(productMap.get(item.product_id), item.quantity));
       const estimatedDeliveryDate = estimateDeliveryDate(new Date(), maxDeliveryDays || 5);
       const merchantIds = Array.from(new Set(products.rows.map((product) => product.merchant_id).filter(Boolean)));
 
       await client.query(
         `INSERT INTO orders (
-          id, user_id, total_amount, status, payment_method, payment_id, payment_status,
+          id, user_id, customer_name, customer_email, total_amount, status, payment_method, payment_id, payment_status,
           shipping_address, address_snapshot, order_snapshot, estimated_delivery_date
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
           orderId,
           userId,
+          customerName,
+          customerEmail,
           totalAmount,
           'confirmed',
           'razorpay',
