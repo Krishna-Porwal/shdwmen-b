@@ -21,6 +21,19 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Rating must be between 1 and 5' });
     }
 
+    const deliveredOrder = await query(
+      `SELECT o.id
+       FROM orders o
+       JOIN order_items oi ON o.id = oi.order_id
+       WHERE o.user_id = $1 AND oi.product_id = $2 AND o.status = 'delivered'
+       LIMIT 1`,
+      [userId, productId]
+    );
+
+    if (deliveredOrder.rows.length === 0) {
+      return res.status(400).json({ error: 'Reviews are only allowed after delivery' });
+    }
+
     // Check if user already reviewed this product
     const existingReview = await query(
       'SELECT * FROM reviews WHERE product_id = $1 AND user_id = $2',

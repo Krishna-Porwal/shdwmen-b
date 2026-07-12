@@ -5,6 +5,153 @@ export interface OrderItemRequest {
   quantity: number;
 }
 
+export type OrderStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'packed'
+  | 'dispatched'
+  | 'out_for_delivery'
+  | 'delivered'
+  | 'cancelled'
+  | 'returned'
+  | 'refunded';
+
+export type RefundStatus = 'initiated' | 'processing' | 'completed';
+
+export const ORDER_STATUS_FLOW: OrderStatus[] = [
+  'pending',
+  'confirmed',
+  'packed',
+  'dispatched',
+  'out_for_delivery',
+  'delivered',
+  'cancelled',
+  'returned',
+  'refunded',
+];
+
+export const CUSTOMER_CANCEL_ALLOWED_STATUSES: OrderStatus[] = ['pending', 'confirmed', 'packed'];
+
+export const MERCHANT_UPDATE_ALLOWED_STATUSES: OrderStatus[] = [
+  'pending',
+  'confirmed',
+  'packed',
+  'dispatched',
+  'out_for_delivery',
+  'delivered',
+  'cancelled',
+  'returned',
+  'refunded',
+];
+
+export function normalizeOrderStatus(status: string): OrderStatus {
+  const normalized = String(status || '').trim().toLowerCase();
+
+  if (normalized === 'shipped') return 'dispatched';
+  if (normalized === 'outfordelivery') return 'out_for_delivery';
+  if (ORDER_STATUS_FLOW.includes(normalized as OrderStatus)) {
+    return normalized as OrderStatus;
+  }
+
+  return 'pending';
+}
+
+export function canCustomerCancel(status: string): boolean {
+  return CUSTOMER_CANCEL_ALLOWED_STATUSES.includes(normalizeOrderStatus(status));
+}
+
+export function addBusinessDays(startDate: Date, businessDays: number): Date {
+  const result = new Date(startDate);
+  let daysRemaining = businessDays;
+
+  while (daysRemaining > 0) {
+    result.setDate(result.getDate() + 1);
+    const day = result.getDay();
+    if (day !== 0 && day !== 6) {
+      daysRemaining -= 1;
+    }
+  }
+
+  return result;
+}
+
+export function estimateDeliveryDate(createdAt: Date, estimatedDays = 5): string {
+  return addBusinessDays(createdAt, Math.max(1, estimatedDays)).toISOString();
+}
+
+export function buildShippingAddressSnapshot(address: any) {
+  return {
+    name: `${address?.firstName || ''} ${address?.lastName || ''}`.trim(),
+    phone: address?.phone || '',
+    address: address?.address || '',
+    city: address?.city || '',
+    state: address?.state || '',
+    pincode: address?.pinCode || '',
+    email: address?.email || '',
+  };
+}
+
+export async function loadProductSnapshots(productIds: string[]) {
+  if (productIds.length === 0) {
+    return [] as any[];
+  }
+
+  const placeholders = productIds.map((_, index) => `$${index + 1}`).join(', ');
+  const result = await query(
+    `SELECT id, merchant_id, name, price, image_url, imgs, size_stock, stock, estimated_delivery_days
+     FROM products
+     WHERE id IN (${placeholders})`,
+    productIds
+  );
+
+  return result.rows;
+}
+
+export function buildProductSnapshot(product: any, quantity: number, requestedSize?: string | null, requestedColor?: string | null) {
+  const imageUrl = Array.isArray(product?.imgs) && product.imgs.length > 0
+    ? product.imgs[0]
+    : product?.image_url || null;
+
+  return {
+    product_id: product.id,
+    name: product.name,
+    price: Number(product.price || 0),
+    image_url: imageUrl,
+    size: requestedSize || null,
+    color: requestedColor || null,
+    quantity,
+  };
+}
+
+export function buildOrderItemSnapshot(product: any, quantity: number, requestedSize?: string | null, requestedColor?: string | null) {
+  return {
+    product_id: product.id,
+    product_name: product.name,
+    product_price: Number(product.price || 0),
+    product_image: Array.isArray(product?.imgs) && product.imgs.length > 0 ? product.imgs[0] : product?.image_url || null,
+    size: requestedSize || null,
+    color: requestedColor || null,
+    quantity,
+  };
+}
+
+export function buildRefundWindow(): { expectedRefundDate: string } {
+  const date = addBusinessDays(new Date(), 10);
+  return { expectedRefundDate: date.toISOString() };
+}
+
+export async function getLatestStatusHistory(orderId: string) {
+  const result = await query(
+    `SELECT id, order_id, previous_status, new_status, note, changed_by, changed_by_role, created_at
+     FROM order_status_history
+     WHERE order_id = $1
+     ORDER BY created_at ASC`,
+    [orderId]
+  );
+
+  return result.rows;
+}
+
 export function validateShippingAddress(address: any): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
 
