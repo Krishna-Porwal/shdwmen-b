@@ -6,6 +6,7 @@ import {
   getOptimizedImageUrl,
 } from '../services/cloudinary';
 import { requireAuth } from '../middleware/auth';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
@@ -42,7 +43,7 @@ router.post('/image', requireAuth, uploadSingle, handleMulterError, async (req: 
       height: result.height,
     });
   } catch (error) {
-    console.error('Upload error:', error);
+    logger.error('Upload error:', error);
     res.status(500).json({ error: 'Failed to upload image' });
   }
 });
@@ -54,8 +55,8 @@ router.post('/image', requireAuth, uploadSingle, handleMulterError, async (req: 
  */
 router.post('/images', requireAuth, uploadMultiple, handleMulterError, async (req: Request, res: Response) => {
   try {
-    console.log('[UPLOAD] POST /images called. req.auth:', (req as any).auth);
-    console.log('[UPLOAD] env check:', {
+    logger.info('[UPLOAD] POST /images called. req.auth:', (req as any).auth);
+    logger.info('[UPLOAD] env check:', {
       cloudName: process.env.CLOUDINARY_CLOUD_NAME ? 'SET' : 'MISSING',
       apiKey: process.env.CLOUDINARY_API_KEY ? 'SET' : 'MISSING',
       apiSecret: process.env.CLOUDINARY_API_SECRET ? 'SET' : 'MISSING',
@@ -65,7 +66,7 @@ router.post('/images', requireAuth, uploadMultiple, handleMulterError, async (re
     }
 
     const files = req.files as Express.Multer.File[];
-    console.log('[UPLOAD] file count:', files.length, 'first file meta:', {
+    logger.info('[UPLOAD] file count:', files.length, 'first file meta:', {
       originalname: files[0].originalname,
       mimetype: files[0].mimetype,
       size: files[0].size,
@@ -88,14 +89,14 @@ router.post('/images', requireAuth, uploadMultiple, handleMulterError, async (re
       height: result.height,
     }));
 
-    console.log('[UPLOAD] uploadedImages:', uploadedImages);
+    logger.info('[UPLOAD] uploadedImages:', uploadedImages);
     res.status(201).json({
       message: 'Images uploaded successfully',
       images: uploadedImages,
       count: uploadedImages.length,
     });
   } catch (error) {
-    console.error('Upload error:', error);
+    logger.error('Upload error:', error);
     const err = error as any;
     const payload: any = { error: 'Failed to upload images' };
     if (process.env.NODE_ENV !== 'production') {
@@ -122,7 +123,7 @@ router.delete('/:publicId', requireAuth, async (req: Request, res: Response) => 
 
     res.json({ message: 'Image deleted successfully' });
   } catch (error) {
-    console.error('Delete error:', error);
+    logger.error('Delete error:', error);
     res.status(500).json({ error: 'Failed to delete image' });
   }
 });

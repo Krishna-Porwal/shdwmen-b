@@ -1,6 +1,7 @@
 import express, { Router, Request, Response } from 'express';
 import { query } from '../db/connection';
 import { requireAuth, requireMerchant } from '../middleware/auth';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
@@ -144,7 +145,7 @@ router.get('/product-lifecycle', async (req: Request, res: Response) => {
 
     res.json(diagnostics);
   } catch (error) {
-    console.error('Lifecycle test error:', error);
+    logger.error('Lifecycle test error:', error);
     res.status(500).json({ error: 'Failed to run diagnostic tests' });
   }
 });
@@ -225,7 +226,7 @@ router.get('/data-integrity', async (req: Request, res: Response) => {
 
     res.json(report);
   } catch (error) {
-    console.error('Data integrity test error:', error);
+    logger.error('Data integrity test error:', error);
     res.status(500).json({ error: 'Failed to run data integrity tests' });
   }
 });

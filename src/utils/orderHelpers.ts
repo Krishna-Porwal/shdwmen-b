@@ -1,4 +1,5 @@
 import { query } from '../db/connection';
+import logger from '../logger';
 
 export interface OrderItemRequest {
   product_id: string;
@@ -220,7 +221,7 @@ export async function checkProductStock(productId: string, quantity: number): Pr
     }
     return true;
   } catch (error) {
-    console.error('Stock check error:', error);
+    logger.error('Stock check error:', error);
     return false;
   }
 }

@@ -2,6 +2,7 @@ import express, { Router, Request, Response } from 'express';
 import { query } from '../db/connection';
 import { requireAuth } from '../middleware/auth';
 import bcrypt from 'bcryptjs';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
@@ -28,10 +29,10 @@ router.post('/sync', async (req: Request, res: Response) => {
       [clerkId, fullName, email, 'clerk_auth', role]
     );
 
-    console.log('User synced from Clerk:', result.rows[0].id);
+    logger.info('User synced from Clerk:', result.rows[0].id);
     res.json({ success: true, user: result.rows[0] });
   } catch (error) {
-    console.error('User sync error:', error);
+    logger.error('User sync error:', error);
     res.status(500).json({ error: 'Failed to sync user' });
   }
 });
@@ -52,7 +53,7 @@ router.get('/profile', requireAuth, async (req: Request, res: Response) => {
 
     res.json(result.rows[0]);
   } catch (error) {
-    console.error('Get profile error:', error);
+    logger.error('Get profile error:', error);
     res.status(500).json({ error: 'Failed to fetch profile' });
   }
 });
@@ -98,7 +99,7 @@ router.put('/profile', requireAuth, async (req: Request, res: Response) => {
       user: result.rows[0],
     });
   } catch (error) {
-    console.error('Update profile error:', error);
+    logger.error('Update profile error:', error);
     res.status(500).json({ error: 'Failed to update profile' });
   }
 });
@@ -138,7 +139,7 @@ router.post('/change-password', requireAuth, async (req: Request, res: Response)
 
     res.json({ message: 'Password changed successfully' });
   } catch (error) {
-    console.error('Change password error:', error);
+    logger.error('Change password error:', error);
     res.status(500).json({ error: 'Failed to change password' });
   }
 });
@@ -159,7 +160,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 
     res.json(result.rows[0]);
   } catch (error) {
-    console.error('Get user error:', error);
+    logger.error('Get user error:', error);
     res.status(500).json({ error: 'Failed to fetch user' });
   }
 });
@@ -198,7 +199,7 @@ router.post('/phone', requireAuth, async (req: Request, res: Response) => {
       user: result.rows[0],
     });
   } catch (error) {
-    console.error('Save phone error:', error);
+    logger.error('Save phone error:', error);
     res.status(500).json({ error: 'Failed to save phone number' });
   }
 });

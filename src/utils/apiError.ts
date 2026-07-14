@@ -1,4 +1,5 @@
 import type { Response } from 'express';
+import logger from '../logger';
 
 export function isDevelopmentMode() {
   return process.env.NODE_ENV === 'development';
@@ -33,6 +34,6 @@ export function formatServerError(error: unknown, fallbackMessage: string) {
 }
 
 export function sendServerError(res: Response, error: unknown, fallbackMessage: string) {
-  console.error(fallbackMessage, error);
+  logger.error(fallbackMessage, error);
   return res.status(500).json(formatServerError(error, fallbackMessage));
 }

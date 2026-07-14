@@ -18,6 +18,7 @@ import {
   estimateDeliveryDate,
 } from '../utils/orderHelpers';
 import { isMissingRelationError, sendServerError } from '../utils/apiError';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
@@ -117,12 +118,12 @@ async function safeNotifyUsers(
         await notifyUsers(client, recipients, payload);
         return;
       } catch (retryError) {
-        console.error('Notification retry failed:', retryError);
+        logger.error('Notification retry failed:', retryError);
       }
       return;
     }
 
-    console.error('Notification dispatch failed:', error);
+    logger.error('Notification dispatch failed:', error);
   }
 }
 
@@ -130,6 +131,7 @@ async function safeNotifyUsers(
 router.post('/razorpay/create-order', requireAuth, async (req: Request<{}, {}, PaymentCreateRequest>, res: Response) => {
   try {
     const { amount, items, shipping_address } = req.body;
+    const idempotencyKey = String(req.headers['idempotency-key'] || req.body.idempotency_key || '').trim();
     const userId = req.auth?.userId;
 
     if (!userId) {
@@ -168,6 +170,22 @@ router.post('/razorpay/create-order', requireAuth, async (req: Request<{}, {}, P
       return res.status(400).json({ error: 'Order amount must be at least ₹1' });
     }
 
+    const existingIdempotency = idempotencyKey
+      ? await query('SELECT metadata FROM idempotency_keys WHERE idempotency_key = $1', [idempotencyKey])
+      : null;
+
+    if (existingIdempotency?.rows?.length > 0) {
+      const existingMeta = existingIdempotency.rows[0]?.metadata || {};
+      if (existingMeta.razorpay_order_id) {
+        return res.json({
+          razorpay_order_id: existingMeta.razorpay_order_id,
+          razorpay_order_number: existingMeta.razorpay_order_number,
+          amount: existingMeta.amount,
+          idempotency_key: idempotencyKey,
+        });
+      }
+    }
+
     const razorpayOrder = await razorpay.orders.create({
       amount: expectedAmount,
       currency: 'INR',
@@ -184,10 +202,20 @@ router.post('/razorpay/create-order', requireAuth, async (req: Request<{}, {}, P
     const orderReceipt = (razorpayOrder as any).receipt;
     const orderAmount = (razorpayOrder as any).amount;
 
+    if (idempotencyKey) {
+      await query(
+        `INSERT INTO idempotency_keys (id, user_id, idempotency_key, request_hash, metadata)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (idempotency_key) DO UPDATE SET metadata = EXCLUDED.metadata`,
+        [uuidv4(), userId, idempotencyKey, JSON.stringify({ amount, items, shipping_address }), JSON.stringify({ razorpay_order_id: orderId, razorpay_order_number: orderReceipt, amount: orderAmount })]
+      );
+    }
+
     res.json({
       razorpay_order_id: orderId,
       razorpay_order_number: orderReceipt,
       amount: orderAmount,
+      idempotency_key: idempotencyKey || undefined,
     });
   } catch (error) {
     sendServerError(res, error, 'Failed to create payment order');
@@ -198,6 +226,7 @@ router.post('/razorpay/create-order', requireAuth, async (req: Request<{}, {}, P
 router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, PaymentVerifyRequest>, res: Response) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, items, shipping_address } = req.body;
+    const idempotencyKey = String(req.headers['idempotency-key'] || req.body.idempotency_key || '').trim();
     const userId = req.auth?.userId;
 
     if (!userId) {
@@ -244,6 +273,33 @@ router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, Payment
           entityId?: string | null;
         };
       }> = [];
+
+      if (idempotencyKey) {
+        const idempotencyResult = await client.query(
+          'SELECT order_id FROM idempotency_keys WHERE user_id = $1 AND idempotency_key = $2 FOR UPDATE',
+          [userId, idempotencyKey]
+        );
+
+        if (idempotencyResult.rows.length > 0 && idempotencyResult.rows[0].order_id) {
+          const existingOrder = await query('SELECT * FROM orders WHERE id = $1', [idempotencyResult.rows[0].order_id]);
+          await client.query('ROLLBACK');
+          return res.status(200).json({
+            message: 'Order already processed',
+            order_id: existingOrder.rows[0]?.id,
+            status: existingOrder.rows[0]?.status,
+            payment_id: razorpay_payment_id,
+          });
+        }
+
+        if (idempotencyResult.rows.length === 0) {
+          await client.query(
+            `INSERT INTO idempotency_keys (id, user_id, idempotency_key, request_hash)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (idempotency_key) DO NOTHING`,
+            [uuidv4(), userId, idempotencyKey, JSON.stringify({ razorpay_order_id, razorpay_payment_id, razorpay_signature, items, shipping_address })]
+          );
+        }
+      }
 
       const existingPayment = await client.query(
         'SELECT id FROM orders WHERE payment_id = $1 FOR UPDATE',
@@ -300,27 +356,42 @@ router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, Payment
       const estimatedDeliveryDate = estimateDeliveryDate(new Date(), maxDeliveryDays || 5);
       const merchantIds = Array.from(new Set(products.rows.map((product) => product.merchant_id).filter(Boolean)));
 
-      await client.query(
-        `INSERT INTO orders (
-          id, user_id, customer_name, customer_email, total_amount, status, payment_method, payment_id, payment_status,
-          shipping_address, address_snapshot, order_snapshot, estimated_delivery_date
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-        [
-          orderId,
-          userId,
-          customerName,
-          customerEmail,
-          totalAmount,
-          'confirmed',
-          'razorpay',
-          razorpay_payment_id,
-          'captured',
-          JSON.stringify(shipping_address),
-          JSON.stringify(addressSnapshot),
-          JSON.stringify(orderSnapshot),
-          estimatedDeliveryDate,
-        ]
-      );
+      try {
+        await client.query(
+          `INSERT INTO orders (
+            id, user_id, customer_name, customer_email, total_amount, status, payment_method, payment_id, payment_status,
+            shipping_address, address_snapshot, order_snapshot, estimated_delivery_date
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+          [
+            orderId,
+            userId,
+            customerName,
+            customerEmail,
+            totalAmount,
+            'confirmed',
+            'razorpay',
+            razorpay_payment_id,
+            'captured',
+            JSON.stringify(shipping_address),
+            JSON.stringify(addressSnapshot),
+            JSON.stringify(orderSnapshot),
+            estimatedDeliveryDate,
+          ]
+        );
+      } catch (insertErr: any) {
+        // Handle unique violation on payment_id (another process inserted the order)
+        if (insertErr && insertErr.code === '23505') {
+          await client.query('ROLLBACK');
+          const existingOrder = await query('SELECT * FROM orders WHERE payment_id = $1', [razorpay_payment_id]);
+          return res.status(200).json({
+            message: 'Payment already processed',
+            order_id: existingOrder.rows[0]?.id,
+            status: existingOrder.rows[0]?.status,
+            payment_id: razorpay_payment_id,
+          });
+        }
+        throw insertErr;
+      }
 
       for (const item of items) {
         const product = productMap.get(item.product_id);
@@ -356,6 +427,14 @@ router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, Payment
         action: 'payment_verified',
         metadata: { razorpay_payment_id, razorpay_order_id, totalAmount },
       });
+
+      if (idempotencyKey) {
+        await client.query(
+          'UPDATE idempotency_keys SET order_id = $1 WHERE user_id = $2 AND idempotency_key = $3',
+          [orderId, userId, idempotencyKey]
+        );
+      }
+
       postCommitNotifications.push({
         recipients: [String(userId)],
         payload: {

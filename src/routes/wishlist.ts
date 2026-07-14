@@ -2,6 +2,7 @@ import express, { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../db/connection';
 import { requireAuth } from '../middleware/auth';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
@@ -21,7 +22,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
 
     res.json(result.rows);
   } catch (error) {
-    console.error('Get wishlist error:', error);
+    logger.error('Get wishlist error:', error);
     res.status(500).json({ error: 'Failed to fetch wishlist' });
   }
 });
@@ -60,7 +61,7 @@ router.post('/add', requireAuth, async (req: Request, res: Response) => {
 
     res.status(201).json({ message: 'Item added to wishlist' });
   } catch (error) {
-    console.error('Add to wishlist error:', error);
+    logger.error('Add to wishlist error:', error);
     res.status(500).json({ error: 'Failed to add to wishlist' });
   }
 });
@@ -75,7 +76,7 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
 
     res.json({ message: 'Item removed from wishlist' });
   } catch (error) {
-    console.error('Remove from wishlist error:', error);
+    logger.error('Remove from wishlist error:', error);
     res.status(500).json({ error: 'Failed to remove from wishlist' });
   }
 });
@@ -93,7 +94,7 @@ router.get('/check/:product_id', requireAuth, async (req: Request, res: Response
 
     res.json({ inWishlist: result.rows.length > 0 });
   } catch (error) {
-    console.error('Check wishlist error:', error);
+    logger.error('Check wishlist error:', error);
     res.status(500).json({ error: 'Failed to check wishlist' });
   }
 });

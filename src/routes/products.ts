@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { query } from '../db/connection';
 import { requireMerchant } from '../middleware/auth';
 import { deleteFromCloudinary } from '../services/cloudinary';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
@@ -135,7 +136,7 @@ router.get('/', async (req: Request, res: Response) => {
     const result = await query(sql, params);
     res.json(result.rows);
   } catch (error) {
-    console.error('Get products error:', error);
+    logger.error('Get products error:', error);
     res.status(500).json({ error: 'Failed to fetch products' });
   }
 });
@@ -170,7 +171,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 
     res.json(result.rows[0]);
   } catch (error) {
-    console.error('Get product error:', error);
+    logger.error('Get product error:', error);
     res.status(500).json({ error: 'Failed to fetch product' });
   }
 });
@@ -178,8 +179,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 // Create product (merchant only)
 router.post('/', requireMerchant, async (req: Request<{}, {}, ProductRequest>, res: Response) => {
   try {
-    console.log('[PRODUCTS] POST / create called. req.auth:', req.auth);
-    console.log('[PRODUCTS] Request body:', req.body);
+    logger.info({ auth: req.auth, body: req.body }, '[PRODUCTS] POST / create called');
     const {
       name,
       description,
@@ -223,8 +223,8 @@ router.post('/', requireMerchant, async (req: Request<{}, {}, ProductRequest>, r
         estimated_delivery_days, status, is_sponsored, image_url, imgs, images, size_stock, stock)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`;
 
-    console.log('[PRODUCTS] Insert SQL:', insertSql);
-    console.log('[PRODUCTS] Insert params:', [
+    logger.info('[PRODUCTS] Insert SQL:', insertSql);
+    logger.info('[PRODUCTS] Insert params:', [
       productId,
       merchantId,
       name,
@@ -278,7 +278,7 @@ router.post('/', requireMerchant, async (req: Request<{}, {}, ProductRequest>, r
       product: result.rows[0],
     });
   } catch (error) {
-    console.error('Create product error:', error);
+    logger.error('Create product error:', error);
     const err = error as any;
     const payload: any = { error: 'Failed to create product' };
     if (process.env.NODE_ENV !== 'production') {
@@ -449,7 +449,7 @@ router.put('/:id', requireMerchant, async (req: Request<{ id: string }, {}, Part
       product: result.rows[0],
     });
   } catch (error) {
-    console.error('Update product error:', error);
+    logger.error('Update product error:', error);
     res.status(500).json({ error: 'Failed to update product' });
   }
 });
@@ -478,7 +478,7 @@ router.delete('/:id', requireMerchant, async (req: Request, res: Response) => {
     await query('UPDATE products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', ['inactive', productId]);
     res.json({ message: 'Product set to inactive' });
   } catch (error) {
-    console.error('Delete product error:', error);
+    logger.error('Delete product error:', error);
     res.status(500).json({ error: 'Failed to delete product' });
   }
 });
@@ -513,7 +513,7 @@ router.patch('/:id/status', requireMerchant, async (req: Request<{ id: string },
     await query('UPDATE products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [status, productId]);
     res.json({ message: 'Product status updated', status });
   } catch (error) {
-    console.error('Update product status error:', error);
+    logger.error('Update product status error:', error);
     res.status(500).json({ error: 'Failed to update product status' });
   }
 });

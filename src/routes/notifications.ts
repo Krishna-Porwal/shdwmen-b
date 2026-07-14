@@ -3,6 +3,7 @@ import { query } from '../db/connection';
 import { requireAuth } from '../middleware/auth';
 import { createTables } from '../db/migrate';
 import { isMissingRelationError, sendServerError } from '../utils/apiError';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
@@ -56,7 +57,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       try {
         await createTables();
       } catch (bootstrapError) {
-        console.error('Notification table bootstrap failed:', bootstrapError);
+        logger.error('Notification table bootstrap failed:', bootstrapError);
       }
 
       return res.json({ unreadCount: 0, notifications: [] });

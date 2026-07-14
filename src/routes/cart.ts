@@ -2,6 +2,7 @@ import express, { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../db/connection';
 import { requireAuth } from '../middleware/auth';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
@@ -25,7 +26,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
 
     res.json(result.rows);
   } catch (error) {
-    console.error('Get cart error:', error);
+    logger.error('Get cart error:', error);
     res.status(500).json({ error: 'Failed to fetch cart' });
   }
 });
@@ -69,7 +70,7 @@ router.post('/add', requireAuth, async (req: Request<{}, {}, AddToCartRequest>, 
 
     res.json({ message: 'Item added to cart' });
   } catch (error) {
-    console.error('Add to cart error:', error);
+    logger.error('Add to cart error:', error);
     res.status(500).json({ error: 'Failed to add to cart' });
   }
 });
@@ -92,7 +93,7 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
 
     res.json({ message: 'Cart item updated' });
   } catch (error) {
-    console.error('Update cart error:', error);
+    logger.error('Update cart error:', error);
     res.status(500).json({ error: 'Failed to update cart' });
   }
 });
@@ -107,7 +108,7 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
 
     res.json({ message: 'Item removed from cart' });
   } catch (error) {
-    console.error('Remove from cart error:', error);
+    logger.error('Remove from cart error:', error);
     res.status(500).json({ error: 'Failed to remove from cart' });
   }
 });
@@ -121,7 +122,7 @@ router.post('/clear', requireAuth, async (req: Request, res: Response) => {
 
     res.json({ message: 'Cart cleared' });
   } catch (error) {
-    console.error('Clear cart error:', error);
+    logger.error('Clear cart error:', error);
     res.status(500).json({ error: 'Failed to clear cart' });
   }
 });

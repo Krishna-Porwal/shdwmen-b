@@ -1,8 +1,11 @@
 import express, { Express } from 'express';
 import cors from 'cors';
-import bodyParser from 'body-parser';
-import pool from './db/connection';
+import helmet from 'helmet';
+import compression from 'compression';
+import rateLimit from 'express-rate-limit';
 import { CORS_ORIGIN, PORT } from './config';
+import { requestLogger } from './logger';
+import logger from './logger';
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -29,20 +32,68 @@ import { verifyClerkToken } from './middleware/auth';
 const app: Express = express();
 
 // Middleware
+// Security and parsing middleware
 app.use(cors({
   origin: CORS_ORIGIN,
   credentials: true,
 }));
-app.use(bodyParser.json({ limit: '50mb' }));
-app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
+app.use(helmet());
+app.use(compression());
+app.use(requestLogger);
+
+// Rate limiting
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+const paymentLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api', apiLimiter);
+app.use('/api/payments', paymentLimiter);
+
+// Request size limits
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ limit: '5mb', extended: true }));
 
 // Apply Clerk JWT verification middleware globally
 // This middleware extracts the token from Authorization header and attaches it to req.auth
 app.use(verifyClerkToken);
 
 // Health check route
-app.get('/health', (req, res) => {
-  res.json({ status: 'Server is running', timestamp: new Date().toISOString() });
+app.get('/health', async (req, res) => {
+  try {
+    const { query } = await import('./db/connection');
+    await query('SELECT 1');
+    res.json({ status: 'ok', database: true, uptime: process.uptime() });
+  } catch (err) {
+    res.status(500).json({ status: 'error', database: false, uptime: process.uptime() });
+  }
+});
+
+app.get('/health/detailed', async (req, res) => {
+  try {
+    const { query } = await import('./db/connection');
+    await query('SELECT 1');
+    res.json({
+      database: true,
+      version: process.env.npm_package_version || 'unknown',
+      uptime: process.uptime(),
+    });
+  } catch (err) {
+    res.status(500).json({ database: false, version: process.env.npm_package_version || 'unknown', uptime: process.uptime() });
+  }
+});
+
+app.post('/webhooks/razorpay', express.json({ limit: '5mb' }), async (req, res) => {
+  logger.info({ event: 'razorpay_webhook', body: req.body }, 'Received Razorpay webhook');
+  return res.status(200).json({ status: 'ok' });
 });
 
 // Routes
@@ -64,7 +115,7 @@ app.use('/api/merchant', merchantExportRoutes);
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error(err);
+  logger.error({ err, url: req.url, method: req.method }, 'Unhandled error');
   res.status(500).json(formatServerError(err, 'Internal Server Error'));
 });
 
@@ -84,32 +135,31 @@ async function startServer() {
         const isDev = process.env.NODE_ENV !== 'production';
         const msg = 'Critical column products.sold_count is missing';
         if (isDev) {
-          console.warn(msg + '; continuing in development mode');
+          logger.warn(msg + '; continuing in development mode');
         } else {
-          console.error(msg + '; exiting in production');
+          logger.error(msg + '; exiting in production');
           process.exit(1);
         }
       }
     } catch (err) {
-      console.error('Startup schema validation error:', err);
+      logger.error({ err }, 'Startup schema validation error');
     }
 
     try {
       const { checkPendingMigrations } = await import('./db/migrate');
       const { pending } = await checkPendingMigrations();
       if (pending && pending.length > 0) {
-        console.warn('There are drizzle migration files that are not yet applied. Run `npm run drizzle:migrate:checked` to apply them.');
+        logger.warn('There are drizzle migration files that are not yet applied. Run `npm run drizzle:migrate:checked` to apply them.');
       }
     } catch (err) {
-      console.error('Failed to check pending migrations at startup:', err);
+      logger.error({ err }, 'Failed to check pending migrations at startup');
     }
 
     app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📝 Environment: ${process.env.NODE_ENV}`);
+      logger.info({ port: PORT, env: process.env.NODE_ENV }, 'Server running');
     });
   } catch (error) {
-    console.error('Failed to bootstrap database before startup:', error);
+    logger.error({ error }, 'Failed to bootstrap database before startup');
     process.exit(1);
   }
 }
@@ -119,3 +169,4 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 export default app;
+

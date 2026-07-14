@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { query } from '../db/connection';
 import { requireAuth } from '../middleware/auth';
 import { JWT_SECRET } from '../config';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
@@ -58,7 +59,7 @@ router.post('/signup', async (req: Request<{}, {}, SignupRequest>, res: Response
       user: { id: userId, name, email, role },
     });
   } catch (error) {
-    console.error('Signup error:', error);
+    logger.error('Signup error:', error);
     res.status(500).json({ error: 'Signup failed' });
   }
 });
@@ -111,7 +112,7 @@ router.post('/merchant/login', async (req: Request<{}, {}, { username: string; p
       },
     });
   } catch (error) {
-    console.error('Merchant login error:', error);
+    logger.error('Merchant login error:', error);
     res.status(500).json({ error: 'Login failed' });
   }
 });
@@ -157,7 +158,7 @@ router.post('/login', async (req: Request<{}, {}, LoginRequest>, res: Response) 
       },
     });
   } catch (error) {
-    console.error('Login error:', error);
+    logger.error('Login error:', error);
     res.status(500).json({ error: 'Login failed' });
   }
 });

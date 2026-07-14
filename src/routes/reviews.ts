@@ -1,6 +1,7 @@
 import express, { Router, Request, Response } from 'express';
 import { query } from '../db/connection';
 import { requireAuth } from '../middleware/auth';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
@@ -79,7 +80,7 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       productAverageRating: avgRating,
     });
   } catch (error) {
-    console.error('Save review error:', error);
+    logger.error('Save review error:', error);
     res.status(500).json({ error: 'Failed to save review' });
   }
 });
@@ -115,7 +116,7 @@ router.get('/product/:productId', async (req: Request, res: Response) => {
       averageRating: parseFloat(avgResult.rows[0].avg_rating) || 0,
     });
   } catch (error) {
-    console.error('Get reviews error:', error);
+    logger.error('Get reviews error:', error);
     res.status(500).json({ error: 'Failed to fetch reviews' });
   }
 });
@@ -160,7 +161,7 @@ router.delete('/:reviewId', requireAuth, async (req: Request, res: Response) => 
 
     res.json({ message: 'Review deleted' });
   } catch (error) {
-    console.error('Delete review error:', error);
+    logger.error('Delete review error:', error);
     res.status(500).json({ error: 'Failed to delete review' });
   }
 });

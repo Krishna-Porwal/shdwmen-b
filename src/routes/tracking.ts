@@ -1,5 +1,6 @@
 import express, { Router, Request, Response } from 'express';
 import { query } from '../db/connection';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
@@ -33,7 +34,7 @@ router.post('/activity', async (req: Request<{}, {}, TrackingRequest>, res: Resp
 
     res.status(201).json({ message: 'Activity tracked' });
   } catch (error) {
-    console.error('Track activity error:', error);
+    logger.error('Track activity error:', error);
     res.status(500).json({ error: 'Failed to track activity' });
   }
 });
@@ -63,7 +64,7 @@ router.get('/product/:productId', async (req: Request, res: Response) => {
       activities: result.rows,
     });
   } catch (error) {
-    console.error('Get product analytics error:', error);
+    logger.error('Get product analytics error:', error);
     res.status(500).json({ error: 'Failed to fetch analytics' });
   }
 });
@@ -91,7 +92,7 @@ router.get('/user/:userId', async (req: Request, res: Response) => {
       activities: result.rows,
     });
   } catch (error) {
-    console.error('Get user activity error:', error);
+    logger.error('Get user activity error:', error);
     res.status(500).json({ error: 'Failed to fetch user activity' });
   }
 });

@@ -21,6 +21,7 @@ import {
   validateShippingAddress,
 } from '../utils/orderHelpers';
 import { isMissingRelationError, sendServerError } from '../utils/apiError';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
@@ -131,12 +132,12 @@ async function safeNotifyUsers(
         await notifyUsers(client, recipients, payload);
         return;
       } catch (retryError) {
-        console.error('Notification retry failed:', retryError);
+        logger.error('Notification retry failed:', retryError);
       }
       return;
     }
 
-    console.error('Notification dispatch failed:', error);
+    logger.error('Notification dispatch failed:', error);
   }
 }
 
@@ -510,7 +511,7 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
       client.release();
     }
   } catch (error) {
-    console.error('Create order error:', error);
+    logger.error('Create order error:', error);
     if (error instanceof Error) {
       if (error.message.includes('shipping_address')) {
         return res.status(400).json({ error: 'Shipping address is required' });
@@ -529,10 +530,10 @@ router.post('/:id/cancel', requireAuth, async (req: Request, res: Response) => {
     const { id } = req.params;
     const { cancelReason, cancelReasonType } = req.body as { cancelReason?: string; cancelReasonType?: string };
     const userId = req.auth?.userId;
-    console.log('[ORDERS][CANCEL] — Order ID:', id);
-    console.log('[ORDERS][CANCEL] — User ID:', userId);
-    console.log('[ORDERS][CANCEL] — Body:', req.body);
-    console.log('[ORDERS][CANCEL] payload:', { cancelReason, cancelReasonType });
+    logger.info('[ORDERS][CANCEL] — Order ID:', id);
+    logger.info('[ORDERS][CANCEL] — User ID:', userId);
+    logger.info('[ORDERS][CANCEL] — Body:', req.body);
+    logger.info('[ORDERS][CANCEL] payload:', { cancelReason, cancelReasonType });
     const client = await getClient();
     try {
       await client.query('BEGIN');
@@ -556,7 +557,7 @@ router.post('/:id/cancel', requireAuth, async (req: Request, res: Response) => {
       }
 
       const order = orderResult.rows[0];
-      console.log('[ORDERS][CANCEL] — Order:', order);
+      logger.info('[ORDERS][CANCEL] — Order:', order);
       const normalizedStatus = normalizeOrderStatus(order.status);
 
       // Check if requester is customer or merchant for this order
@@ -703,7 +704,7 @@ router.post('/:id/cancel', requireAuth, async (req: Request, res: Response) => {
       client.release();
     }
   } catch (error) {
-    console.error('Cancel Order Error:', error);
+    logger.error('Cancel Order Error:', error);
     if (error instanceof Error) {
       return res.status(500).json({
         error: error.message,
@@ -720,10 +721,10 @@ router.patch('/:id/status', requireAuth, async (req: Request, res: Response) => 
     const { id } = req.params;
     const { status, cancelReason, cancelReasonType } = req.body;
     const userId = req.auth?.userId;
-    console.log('[ORDERS][STATUS] — Order ID:', id);
-    console.log('[ORDERS][STATUS] — User ID:', userId);
-    console.log('[ORDERS][STATUS] — Body:', req.body);
-    console.log('[ORDERS][STATUS] payload:', { status, cancelReason, cancelReasonType });
+    logger.info('[ORDERS][STATUS] — Order ID:', id);
+    logger.info('[ORDERS][STATUS] — User ID:', userId);
+    logger.info('[ORDERS][STATUS] — Body:', req.body);
+    logger.info('[ORDERS][STATUS] payload:', { status, cancelReason, cancelReasonType });
 
     if (!ORDER_STATUS_FLOW.includes(normalizeOrderStatus(status))) {
       return res.status(400).json({ error: 'Invalid status' });
@@ -764,7 +765,7 @@ router.patch('/:id/status', requireAuth, async (req: Request, res: Response) => 
 
       const orderResult = await client.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [id]);
       const order = orderResult.rows[0];
-      console.log('[ORDERS][STATUS] — Order:', order);
+      logger.info('[ORDERS][STATUS] — Order:', order);
       if (!order) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Order not found or unauthorized' });
@@ -916,7 +917,7 @@ router.patch('/:id/status', requireAuth, async (req: Request, res: Response) => 
       client.release();
     }
   } catch (error) {
-    console.error('Update Order Status Error:', error);
+    logger.error('Update Order Status Error:', error);
     if (error instanceof Error) {
       return res.status(500).json({
         error: error.message,

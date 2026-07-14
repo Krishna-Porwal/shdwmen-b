@@ -1,6 +1,7 @@
 import express from 'express';
 import { query } from '../db/connection';
 import { requireMerchant } from '../middleware/auth';
+import logger from '../logger';
 
 const router = express.Router();
 
@@ -31,7 +32,7 @@ router.get('/analytics/export/total-orders', requireMerchant, async (req, res) =
     res.setHeader('Content-Disposition','attachment; filename="total_orders_export.csv"');
     res.send(csv);
   } catch (err) {
-    console.error('Export total-orders failed', err);
+    logger.error('Export total-orders failed', err);
     res.status(500).json({ error: 'Export failed' });
   }
 });
@@ -54,7 +55,7 @@ router.get('/analytics/export/revenue', requireMerchant, async (req, res) => {
     res.setHeader('Content-Disposition','attachment; filename="revenue_export.csv"');
     res.send(csv);
   } catch (err) {
-    console.error('Export revenue failed', err);
+    logger.error('Export revenue failed', err);
     res.status(500).json({ error: 'Export failed' });
   }
 });
@@ -78,7 +79,7 @@ router.get('/analytics/export/cod', requireMerchant, async (req, res) => {
     res.setHeader('Content-Disposition','attachment; filename="cod_export.csv"');
     res.send(csv);
   } catch (err) {
-    console.error('Export cod failed', err);
+    logger.error('Export cod failed', err);
     res.status(500).json({ error: 'Export failed' });
   }
 });
@@ -101,7 +102,7 @@ router.get('/analytics/export/cancelled-orders', requireMerchant, async (req, re
     res.setHeader('Content-Disposition','attachment; filename="cancelled_orders_export.csv"');
     res.send(csv);
   } catch (err) {
-    console.error('Export cancelled-orders failed', err);
+    logger.error('Export cancelled-orders failed', err);
     res.status(500).json({ error: 'Export failed' });
   }
 });

@@ -3,6 +3,7 @@ import { verifyToken } from '@clerk/backend';
 import jwt, { JwtPayload } from 'jsonwebtoken';
 import { query } from '../db/connection';
 import { CLERK_SECRET_KEY, CLERK_API_URL, JWT_SECRET } from '../config';
+import logger from '../logger';
 
 // Extend Express Request to include auth info
 declare global {
@@ -56,7 +57,7 @@ export const verifyClerkToken = async (req: Request, res: Response, next: NextFu
           role: decoded.role as string | undefined,
         };
       } catch (error: any) {
-        console.warn('[AUTH] Internal JWT verification failed:', error?.message || error);
+        logger.warn('[AUTH] Internal JWT verification failed:', error?.message || error);
         return null;
       }
     };
@@ -77,7 +78,7 @@ export const verifyClerkToken = async (req: Request, res: Response, next: NextFu
           return next();
         }
       } catch (error: any) {
-        console.warn('[AUTH] Clerk token verification failed, trying internal JWT:', error?.message || error);
+        logger.warn('[AUTH] Clerk token verification failed, trying internal JWT:', error?.message || error);
       }
     }
 
@@ -102,14 +103,14 @@ export const verifyClerkToken = async (req: Request, res: Response, next: NextFu
           }
         }
       } catch (error: any) {
-        console.warn('[AUTH] JWT decode fallback failed:', error?.message || error);
+        logger.warn('[AUTH] JWT decode fallback failed:', error?.message || error);
       }
     }
 
-    console.error('[AUTH] Token verification failed for both Clerk and internal JWT');
+    logger.error('[AUTH] Token verification failed for both Clerk and internal JWT');
     return res.status(401).json({ error: 'Unauthorized' });
   } catch (error: any) {
-    console.error('[AUTH] Token verification failed:', error?.message || error);
+    logger.error('[AUTH] Token verification failed:', error?.message || error);
     return res.status(401).json({ error: 'Unauthorized' });
   }
 };
@@ -174,7 +175,7 @@ export const requireMerchant = async (req: Request, res: Response, next: NextFun
 
     next();
   } catch (error) {
-    console.error('[REQUIRE_MERCHANT] Database error:', error);
+    logger.error('[REQUIRE_MERCHANT] Database error:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 };

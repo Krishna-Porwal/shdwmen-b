@@ -1,10 +1,11 @@
 import { query } from './connection';
 import fs from 'fs';
 import path from 'path';
+import logger from '../logger';
 
 export const createTables = async () => {
   try {
-    console.log('Creating tables...');
+    logger.info('Creating tables...');
 
     // Users table
     await query(`
@@ -22,7 +23,7 @@ export const createTables = async () => {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log('✓ Users table created');
+    logger.info('✓ Users table created');
 
     // Add missing columns to users table if they don't exist
     try {
@@ -30,10 +31,10 @@ export const createTables = async () => {
       await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS address TEXT;`);
       await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS shop_name VARCHAR(255);`);
       await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS owner_name VARCHAR(255);`);
-      console.log('✓ Merchant columns added to users table');
+      logger.info('✓ Merchant columns added to users table');
     } catch (altErr) {
       // Columns might already exist
-      console.log('ℹ Merchant columns already exist or error adding them');
+      logger.info('ℹ Merchant columns already exist or error adding them');
     }
 
     // Products table
@@ -64,7 +65,7 @@ export const createTables = async () => {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log('✓ Products table created');
+    logger.info('✓ Products table created');
 
     // Orders table
     await query(`
@@ -95,7 +96,7 @@ export const createTables = async () => {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log('✓ Orders table created');
+    logger.info('✓ Orders table created');
 
     // Order items table
     await query(`
@@ -109,7 +110,7 @@ export const createTables = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log('✓ Order items table created');
+    logger.info('✓ Order items table created');
 
     await query(`
       CREATE TABLE IF NOT EXISTS order_status_history (
@@ -164,10 +165,12 @@ export const createTables = async () => {
         idempotency_key VARCHAR(255) NOT NULL UNIQUE,
         order_id UUID REFERENCES orders(id),
         request_hash VARCHAR(255),
+        metadata JSONB DEFAULT '{}',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log('✓ Order workflow tables created');
+    await query(`ALTER TABLE idempotency_keys ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'`);
+    logger.info('✓ Order workflow tables created');
 
     // Cart table
     await query(`
@@ -181,7 +184,7 @@ export const createTables = async () => {
         UNIQUE(user_id, product_id)
       );
     `);
-    console.log('✓ Cart items table created');
+    logger.info('✓ Cart items table created');
 
     // Wishlist table
     await query(`
@@ -193,7 +196,7 @@ export const createTables = async () => {
         UNIQUE(user_id, product_id)
       );
     `);
-    console.log('✓ Wishlist table created');
+    logger.info('✓ Wishlist table created');
 
     // Reviews table
     await query(`
@@ -206,7 +209,7 @@ export const createTables = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log('✓ Reviews table created');
+    logger.info('✓ Reviews table created');
 
     // Messages table
     await query(`
@@ -219,7 +222,7 @@ export const createTables = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log('✓ Messages table created');
+    logger.info('✓ Messages table created');
 
     // User Activity Tracking table
     await query(`
@@ -236,7 +239,7 @@ export const createTables = async () => {
       CREATE INDEX IF NOT EXISTS idx_user_activity_type ON user_activity(activity_type);
       CREATE INDEX IF NOT EXISTS idx_user_activity_product ON user_activity(product_id);
     `);
-    console.log('✓ User Activity table created');
+    logger.info('✓ User Activity table created');
 
     // Add necessary JSONB columns to products if they don't exist
     try {
@@ -277,36 +280,38 @@ export const createTables = async () => {
       await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(255);`);
       await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP;`);
       await query(`ALTER TABLE order_items ADD COLUMN IF NOT EXISTS product_snapshot JSONB DEFAULT '{}';`);
-      console.log('✓ product JSONB, metadata and payment columns ensured');
+      await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT false;`);
+      logger.info('✓ product JSONB, metadata and payment columns ensured');
     } catch (imgErr) {
-      console.log('ℹ product metadata columns already exist or error adding them');
+      logger.info('ℹ product metadata columns already exist or error adding them');
     }
 
     try {
-      await query(`ALTER TABLE orders ADD CONSTRAINT orders_payment_id_unique UNIQUE (payment_id);`);
-    } catch {
-      // already exists or nullable duplicates present
-    }
+      // Create a partial unique index on payment_id so that multiple NULLs are allowed,
+      // but real payment ids are enforced unique to prevent duplicate order creation.
+      await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_payment_id_unique ON orders(payment_id) WHERE payment_id IS NOT NULL;`);
 
-    try {
       await query(`CREATE INDEX IF NOT EXISTS idx_orders_user_status_created ON orders(user_id, status, created_at DESC);`);
       await query(`CREATE INDEX IF NOT EXISTS idx_orders_payment_id ON orders(payment_id);`);
       await query(`CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read, created_at DESC);`);
       await query(`CREATE INDEX IF NOT EXISTS idx_status_history_order_created ON order_status_history(order_id, created_at DESC);`);
       await query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_order_created ON audit_logs(order_id, created_at DESC);`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_products_merchant ON products(merchant_id);`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_products_is_deleted ON products(is_deleted);`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_order_items_product ON order_items(product_id);`);
     } catch (indexErr) {
-      console.log('ℹ Some workflow indexes already exist or could not be created');
+      logger.info('ℹ Some workflow indexes already exist or could not be created');
     }
 
     // Convert legacy UUID-based user IDs to VARCHAR(255) for Clerk compatibility
     try {
-      console.log('Checking users.id column type for Clerk ID compatibility...');
+      logger.info('Checking users.id column type for Clerk ID compatibility...');
       const usersIdType = await query(
         `SELECT udt_name FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'id'`
       );
 
       if (usersIdType.rows.length && usersIdType.rows[0].udt_name === 'uuid') {
-        console.log('Converting users.id from uuid to varchar(255)');
+        logger.info('Converting users.id from uuid to varchar(255)');
 
         const foreignKeys = [
           { table: 'products', column: 'merchant_id', constraint: 'products_merchant_id_fkey' },
@@ -330,19 +335,19 @@ export const createTables = async () => {
           await query(`ALTER TABLE ${fk.table} ADD CONSTRAINT ${fk.constraint} FOREIGN KEY (${fk.column}) REFERENCES users(id);`);
         }
 
-        console.log('✓ Converted user ID columns and updated foreign key constraints');
+        logger.info('✓ Converted user ID columns and updated foreign key constraints');
       } else {
-        console.log('users.id column already compatible with Clerk IDs, no conversion needed');
+        logger.info('users.id column already compatible with Clerk IDs, no conversion needed');
       }
     } catch (conversionError) {
-      console.error('Error converting user ID column types:', conversionError);
+      logger.error('Error converting user ID column types:', conversionError);
     }
 
     // Keep product and order item IDs as UUID for current schema compatibility
 
-    console.log('\n✅ All tables created successfully!');
+    logger.info('\n✅ All tables created successfully!');
   } catch (error) {
-    console.error('Error creating tables:', error);
+    logger.error('Error creating tables:', error);
   }
 };
 
@@ -411,7 +416,7 @@ export async function validateSchema() {
       missingIndexes,
     };
   } catch (error) {
-    console.error('Schema validation failed:', error);
+    logger.error('Schema validation failed:', error);
     return {
       productsTable: false,
       ordersTable: false,
@@ -440,13 +445,13 @@ export async function checkPendingMigrations() {
 
     const pending = sqlFiles.filter((f) => !appliedTags.includes(f));
     if (pending.length > 0) {
-      console.warn('⚠️ Pending drizzle migrations detected:', pending);
+      logger.warn('⚠️ Pending drizzle migrations detected:', pending);
     } else {
-      console.log('✓ No pending drizzle migrations');
+      logger.info('✓ No pending drizzle migrations');
     }
     return { pending, applied: appliedTags };
   } catch (err) {
-    console.error('Failed to check pending migrations:', err);
+    logger.error('Failed to check pending migrations:', err);
     return { pending: [], applied: [] };
   }
 }
@@ -455,7 +460,7 @@ if (require.main === module) {
   createTables()
     .then(() => process.exit(0))
     .catch((error) => {
-      console.error('Migration failed:', error);
+      logger.error('Migration failed:', error);
       process.exit(1);
     });
 }

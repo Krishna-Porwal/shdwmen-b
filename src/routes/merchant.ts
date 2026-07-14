@@ -3,29 +3,30 @@ import { query } from '../db/connection';
 import { requireAuth, requireMerchant } from '../middleware/auth';
 import { isMissingRelationError } from '../utils/apiError';
 import { sendServerError } from '../utils/apiError';
+import logger from '../logger';
 
 const router: Router = express.Router();
 
 // Save/update merchant profile
 router.post('/profile', requireAuth, async (req: Request, res: Response) => {
   try {
-    console.log('[MERCHANT] POST /profile request received');
-    console.log('[MERCHANT] req.auth:', req.auth);
-    console.log('[MERCHANT] Body:', req.body);
+    logger.info('[MERCHANT] POST /profile request received');
+    logger.info('[MERCHANT] req.auth:', req.auth);
+    logger.info('[MERCHANT] Body:', req.body);
 
     const merchantId = req.auth?.userId;
     const { shopName, ownerName, phone, address, email } = req.body;
     const userEmail = email || `${merchantId}@clerk.local`;
 
-    console.log('[MERCHANT] Extracted - merchantId:', merchantId, 'email from body:', email, 'fallback email:', userEmail);
+    logger.info('[MERCHANT] Extracted - merchantId:', merchantId, 'email from body:', email, 'fallback email:', userEmail);
 
     if (!merchantId) {
-      console.log('[MERCHANT] Missing merchantId - rejecting');
+      logger.info('[MERCHANT] Missing merchantId - rejecting');
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
     if (!shopName || !ownerName) {
-      console.log('[MERCHANT] Missing required fields');
+      logger.info('[MERCHANT] Missing required fields');
       return res.status(400).json({ error: 'Shop name and owner name are required' });
     }
 
@@ -111,7 +112,7 @@ router.get('/profile', requireMerchant, async (req: Request, res: Response) => {
 router.get('/dashboard', requireMerchant, async (req: Request, res: Response) => {
   try {
     const merchantId = req.auth?.userId;
-    console.log('[MERCHANT][DASHBOARD] merchantId=', merchantId);
+    logger.info('[MERCHANT][DASHBOARD] merchantId=', merchantId);
     const totalProductsResult = await query(
       `SELECT COUNT(*) as count
        FROM products
@@ -141,7 +142,7 @@ router.get('/dashboard', requireMerchant, async (req: Request, res: Response) =>
     );
 
     const allOrders = ordersResult.rows;
-    console.log('[MERCHANT][DASHBOARD] orderRows=', allOrders.length);
+    logger.info('[MERCHANT][DASHBOARD] orderRows=', allOrders.length);
     const totalOrders = allOrders.length;
     const onlineOrders = allOrders.filter((order) => order.payment_method === 'razorpay').length;
     const codOrders = allOrders.filter((order) => order.payment_method === 'cod').length;
@@ -297,7 +298,7 @@ router.get('/products', requireMerchant, async (req: Request, res: Response) => 
 router.get('/orders', requireMerchant, async (req: Request, res: Response) => {
   try {
     const merchantId = req.auth?.userId;
-    console.log('[MERCHANT][ORDERS] merchantId=', merchantId, 'query=', req.query);
+    logger.info('[MERCHANT][ORDERS] merchantId=', merchantId, 'query=', req.query);
 
     const status = req.query.status ? String(req.query.status).toLowerCase() : '';
     const paymentMethod = req.query.payment_method ? String(req.query.payment_method).toLowerCase() : '';
@@ -341,12 +342,12 @@ router.get('/orders', requireMerchant, async (req: Request, res: Response) => {
       ]
     );
 
-    console.log('[MERCHANT][ORDERS] resultRows=', result.rows.length);
+    logger.info('[MERCHANT][ORDERS] resultRows=', result.rows.length);
     const filteredOrders = search
       ? result.rows.filter((order: any) => JSON.stringify(order).toLowerCase().includes(search))
       : result.rows;
 
-    console.log('[MERCHANT][ORDERS] returnedRows=', filteredOrders.length);
+    logger.info('[MERCHANT][ORDERS] returnedRows=', filteredOrders.length);
     res.json(filteredOrders);
   } catch (error) {
     sendServerError(res, error, 'Failed to fetch orders');
