@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import Razorpay from 'razorpay';
 import { getClient, query } from '../db/connection';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, ensureUserExists } from '../middleware/auth';
 import { createTables } from '../db/migrate';
 import { RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET } from '../config';
 import {
@@ -26,6 +26,7 @@ interface PaymentCreateRequest {
   amount: number;
   items: Array<{ product_id: string; quantity: number }>;
   shipping_address: any;
+  idempotency_key?: string;
 }
 
 interface PaymentVerifyRequest {
@@ -34,6 +35,7 @@ interface PaymentVerifyRequest {
   razorpay_signature: string;
   items: Array<{ product_id: string; quantity: number }>;
   shipping_address: any;
+  idempotency_key?: string;
 }
 
 const razorpay = new Razorpay({
@@ -138,6 +140,8 @@ router.post('/razorpay/create-order', requireAuth, async (req: Request<{}, {}, P
       return res.status(401).json({ error: 'User ID not found' });
     }
 
+    await ensureUserExists(userId, req.auth?.email);
+
     const addressValidation = validateShippingAddress(shipping_address);
     if (!addressValidation.valid) {
       return res.status(400).json({ error: 'Invalid shipping address', details: addressValidation.errors });
@@ -156,19 +160,26 @@ router.post('/razorpay/create-order', requireAuth, async (req: Request<{}, {}, P
 
     const subtotalResult = await calculateItemSubtotal(items);
     if (!subtotalResult.valid) {
-      return res.status(404).json({ error: subtotalResult.error || 'Unable to calculate order subtotal' });
+      return res.status(404).json({ error: (subtotalResult as any).error || 'Unable to calculate order subtotal' });
     }
 
     const { subtotal, taxAmount, totalAmount } = calculateOrderAmounts(subtotalResult.subtotal);
     const expectedAmount = Math.round(totalAmount * 100);
 
-    if (typeof amount !== 'number' || amount !== expectedAmount) {
-      return res.status(400).json({ error: 'Order amount mismatch or invalid amount submitted' });
+    if (typeof amount !== 'number') {
+      logger.warn('[PAYMENTS] Missing amount in create-order request, using calculated total amount.');
+    } else if (amount !== expectedAmount) {
+      logger.warn('[PAYMENTS] Submitted amount mismatch, using server-calculated total amount.', { submittedAmount: amount, expectedAmount });
     }
 
     if (expectedAmount < 100) {
       return res.status(400).json({ error: 'Order amount must be at least ₹1' });
     }
+
+    const requestHash = crypto
+      .createHash('sha256')
+      .update(JSON.stringify({ amount, items, shipping_address }))
+      .digest('hex');
 
     const existingIdempotency = idempotencyKey
       ? await query('SELECT metadata FROM idempotency_keys WHERE idempotency_key = $1', [idempotencyKey])
@@ -207,7 +218,7 @@ router.post('/razorpay/create-order', requireAuth, async (req: Request<{}, {}, P
         `INSERT INTO idempotency_keys (id, user_id, idempotency_key, request_hash, metadata)
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (idempotency_key) DO UPDATE SET metadata = EXCLUDED.metadata`,
-        [uuidv4(), userId, idempotencyKey, JSON.stringify({ amount, items, shipping_address }), JSON.stringify({ razorpay_order_id: orderId, razorpay_order_number: orderReceipt, amount: orderAmount })]
+        [uuidv4(), userId, idempotencyKey, requestHash, JSON.stringify({ razorpay_order_id: orderId, razorpay_order_number: orderReceipt, amount: orderAmount })]
       );
     }
 
@@ -233,6 +244,8 @@ router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, Payment
       return res.status(401).json({ error: 'User ID not found' });
     }
 
+    await ensureUserExists(userId, req.auth?.email);
+
     const shasum = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET);
     shasum.update(`${razorpay_order_id}|${razorpay_payment_id}`);
     const digest = shasum.digest('hex');
@@ -248,7 +261,7 @@ router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, Payment
 
     const subtotalResult = await calculateItemSubtotal(items);
     if (!subtotalResult.valid) {
-      return res.status(404).json({ error: subtotalResult.error || 'Unable to calculate order subtotal' });
+      return res.status(404).json({ error: (subtotalResult as any).error || 'Unable to calculate order subtotal' });
     }
 
     const { subtotal, taxAmount, totalAmount } = calculateOrderAmounts(subtotalResult.subtotal);
@@ -274,6 +287,11 @@ router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, Payment
         };
       }> = [];
 
+      const requestHash = crypto
+        .createHash('sha256')
+        .update(JSON.stringify({ razorpay_order_id, razorpay_payment_id, items, shipping_address }))
+        .digest('hex');
+
       if (idempotencyKey) {
         const idempotencyResult = await client.query(
           'SELECT order_id FROM idempotency_keys WHERE user_id = $1 AND idempotency_key = $2 FOR UPDATE',
@@ -296,7 +314,7 @@ router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, Payment
             `INSERT INTO idempotency_keys (id, user_id, idempotency_key, request_hash)
              VALUES ($1, $2, $3, $4)
              ON CONFLICT (idempotency_key) DO NOTHING`,
-            [uuidv4(), userId, idempotencyKey, JSON.stringify({ razorpay_order_id, razorpay_payment_id, razorpay_signature, items, shipping_address })]
+            [uuidv4(), userId, idempotencyKey, requestHash]
           );
         }
       }

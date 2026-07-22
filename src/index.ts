@@ -1,4 +1,4 @@
-import express, { Express } from 'express';
+﻿import express, { Express } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
@@ -15,6 +15,8 @@ import cartRoutes from './routes/cart';
 import wishlistRoutes from './routes/wishlist';
 import userRoutes from './routes/users';
 import merchantRoutes from './routes/merchant';
+import categoryRoutes from './routes/categories';
+import campaignRoutes from './routes/campaigns';
 import uploadRoutes from './routes/upload';
 import trackingRoutes from './routes/tracking';
 import reviewRoutes from './routes/reviews';
@@ -42,17 +44,23 @@ app.use(compression());
 app.use(requestLogger);
 
 // Rate limiting
+const rateLimitJsonHandler = (req: express.Request, res: express.Response) => {
+  res.status(429).json({ error: 'Too many requests, please try again later.' });
+};
+
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
+  handler: rateLimitJsonHandler,
 });
 const paymentLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 40,
   standardHeaders: true,
   legacyHeaders: false,
+  handler: rateLimitJsonHandler,
 });
 
 app.use('/api', apiLimiter);
@@ -104,6 +112,8 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/merchant', merchantRoutes);
+app.use('/api/categories', categoryRoutes);
+app.use('/api/campaigns', campaignRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/tracking', trackingRoutes);
 app.use('/api/reviews', reviewRoutes);
@@ -169,4 +179,5 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 export default app;
+
 

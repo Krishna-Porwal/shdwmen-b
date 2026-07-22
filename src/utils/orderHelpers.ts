@@ -250,7 +250,7 @@ export async function calculateItemSubtotal(
 }
 
 export function calculateOrderAmounts(subtotal: number) {
-  const taxAmount = Number((subtotal * 0.18).toFixed(2));
+  const taxAmount = Number((subtotal * 0.05).toFixed(2));
   const totalAmount = Number((subtotal + taxAmount).toFixed(2));
   return { subtotal, taxAmount, totalAmount };
 }

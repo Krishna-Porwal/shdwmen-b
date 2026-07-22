@@ -1,87 +1,144 @@
 import express, { Router, Request, Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
 import { query } from '../db/connection';
-import { requireAuth } from '../middleware/auth';
+import { ensureUserExists, requireAuth, requireMerchant } from '../middleware/auth';
+import { detectReviewSchemaInfo, buildReviewInsertConfig } from '../utils/reviewCompatibility';
 import logger from '../logger';
 
 const router: Router = express.Router();
+
+interface CreateReviewRequest {
+  orderItemId: string;
+  productId: string;
+  rating: number;
+  comment?: string;
+  review?: string;
+  title?: string;
+  review_images?: string[];
+}
 
 /**
  * Create/update a review for a product
  * POST /api/reviews
  */
-router.post('/', requireAuth, async (req: Request, res: Response) => {
+router.post('/', requireAuth, async (req: Request<{}, {}, CreateReviewRequest>, res: Response) => {
   try {
     const userId = req.auth?.userId;
-    const { productId, rating, comment } = req.body;
+    const { orderItemId, productId, rating, comment, review, title, review_images } = req.body;
+    const reviewText = String(review || comment || '').trim();
 
-    if (!productId || !rating) {
-      return res.status(400).json({ error: 'Product ID and rating required' });
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    await ensureUserExists(userId, req.auth?.email, req.auth?.email);
+
+    if (!orderItemId || !productId || typeof rating !== 'number') {
+      return res.status(400).json({ error: 'Order item, product and rating are required' });
+    }
+
+    if (reviewText.length > 1000) {
+      return res.status(400).json({ error: 'Review text must be 1000 characters or less' });
     }
 
     if (rating < 1 || rating > 5) {
       return res.status(400).json({ error: 'Rating must be between 1 and 5' });
     }
 
-    const deliveredOrder = await query(
-      `SELECT o.id
-       FROM orders o
-       JOIN order_items oi ON o.id = oi.order_id
-       WHERE o.user_id = $1 AND oi.product_id = $2 AND o.status = 'delivered'
+    const orderItemResult = await query(
+      `SELECT oi.id,
+        oi.product_id,
+        o.id AS order_id,
+        o.status,
+        p.merchant_id
+       FROM order_items oi
+       JOIN orders o ON oi.order_id = o.id
+       JOIN products p ON oi.product_id = p.id
+       WHERE oi.id = $1 AND oi.product_id = $2 AND o.user_id = $3
        LIMIT 1`,
-      [userId, productId]
+      [orderItemId, productId, userId]
     );
 
-    if (deliveredOrder.rows.length === 0) {
+    if (orderItemResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Order item not found for this user' });
+    }
+
+    const orderItem = orderItemResult.rows[0];
+    if (orderItem.status !== 'delivered') {
       return res.status(400).json({ error: 'Reviews are only allowed after delivery' });
     }
 
-    // Check if user already reviewed this product
+    const merchantId = orderItem.merchant_id;
+    if (merchantId) {
+      await ensureUserExists(merchantId, undefined, 'Merchant');
+    }
+
+    const reviewImagesJson = Array.isArray(review_images)
+      ? review_images.filter((img) => typeof img === 'string')
+      : [];
+
+    const reviewSchemaInfo = await detectReviewSchemaInfo((sql: string) => query(sql));
     const existingReview = await query(
       'SELECT * FROM reviews WHERE product_id = $1 AND user_id = $2',
       [productId, userId]
     );
 
-    let reviewId: string;
-
+    let reviewId = existingReview.rows[0]?.id;
     if (existingReview.rows.length > 0) {
-      // Update existing review
-      reviewId = existingReview.rows[0].id;
+      const updateColumns = [] as string[];
+      const updateParams = [rating, title || null, reviewText, JSON.stringify(reviewImagesJson), reviewId] as any[];
+      if (reviewSchemaInfo.hasTitle) updateColumns.push('title = $2');
+      if (reviewSchemaInfo.hasReview) updateColumns.push('review = $3');
+      if (reviewSchemaInfo.hasComment) updateColumns.push('comment = $3');
+      if (reviewSchemaInfo.hasReviewImages) updateColumns.push('review_images = $4');
+      if (reviewSchemaInfo.hasUpdatedAt) updateColumns.push('updated_at = CURRENT_TIMESTAMP');
       await query(
-        'UPDATE reviews SET rating = $1, comment = $2 WHERE id = $3',
-        [rating, comment || null, reviewId]
+        `UPDATE reviews SET rating = $1, ${updateColumns.join(', ')} WHERE id = $5`,
+        updateParams
       );
     } else {
-      // Create new review
-      const { v4: uuidv4 } = await import('uuid');
       reviewId = uuidv4();
-      await query(
-        'INSERT INTO reviews (id, product_id, user_id, rating, comment) VALUES ($1, $2, $3, $4, $5)',
-        [reviewId, productId, userId, rating, comment || null]
+      const insertConfig = buildReviewInsertConfig(
+        reviewSchemaInfo,
+        reviewId,
+        productId,
+        userId,
+        rating,
+        title || null,
+        reviewText,
+        reviewImagesJson
       );
+      await query(insertConfig.text, insertConfig.params as any[]);
     }
 
-    // Recalculate product average rating
     const avgResult = await query(
-      'SELECT AVG(rating) as avg_rating FROM reviews WHERE product_id = $1',
+      `SELECT COUNT(*) as total, AVG(rating) as avg_rating
+       FROM reviews WHERE product_id = $1`,
       [productId]
     );
 
-    const avgRating = parseFloat(avgResult.rows[0].avg_rating) || 0;
+    const totalReviews = parseInt(avgResult.rows[0].total, 10) || 0;
+    const averageRating = parseFloat(avgResult.rows[0].avg_rating) || 0;
 
-    // Update product avg_rating
     await query(
-      'UPDATE products SET avg_rating = $1 WHERE id = $2',
-      [avgRating.toFixed(2), productId]
+      `UPDATE products
+       SET avg_rating = $1, review_count = $2
+       WHERE id = $3`,
+      [Number(averageRating.toFixed(2)), totalReviews, productId]
     );
 
     res.status(201).json({
       message: 'Review saved',
       reviewId,
-      productAverageRating: avgRating,
+      review: reviewText,
+      rating,
+      totalReviews,
+      averageRating,
     });
   } catch (error) {
-    logger.error('Save review error:', error);
-    res.status(500).json({ error: 'Failed to save review' });
+    const detail = error instanceof Error ? error.message : String(error);
+    logger.error({ err: error }, 'Save review error');
+    res.status(500).json({ error: 'Failed to save review', details: detail });
   }
 });
 
@@ -93,8 +150,15 @@ router.get('/product/:productId', async (req: Request, res: Response) => {
   try {
     const { productId } = req.params;
 
+    const reviewSchemaInfo = await detectReviewSchemaInfo((sql: string) => query(sql));
+    const reviewTextColumn = reviewSchemaInfo.hasReview ? 'r.review' : reviewSchemaInfo.hasComment ? 'r.comment' : "''";
+    const reviewTitleColumn = reviewSchemaInfo.hasTitle ? 'r.title' : "''";
+    const reviewImagesColumn = reviewSchemaInfo.hasReviewImages ? 'r.review_images' : "'[]'::jsonb";
+    const verifiedPurchaseColumn = reviewSchemaInfo.hasIsVerifiedPurchase ? 'r.is_verified_purchase' : 'TRUE';
+
     const result = await query(
-      `SELECT r.*, u.name as user_name
+      `SELECT r.id, r.rating, ${reviewTitleColumn} as title, ${reviewTextColumn} as comment, ${reviewImagesColumn} as "reviewImages", ${verifiedPurchaseColumn} as "isVerifiedPurchase",
+              r.created_at as "createdAt", u.name as "userName", u.email as "userEmail"
        FROM reviews r
        LEFT JOIN users u ON r.user_id = u.id
        WHERE r.product_id = $1
@@ -102,7 +166,6 @@ router.get('/product/:productId', async (req: Request, res: Response) => {
       [productId]
     );
 
-    // Get average rating
     const avgResult = await query(
       `SELECT COUNT(*) as total, AVG(rating) as avg_rating
        FROM reviews WHERE product_id = $1`,
@@ -112,7 +175,7 @@ router.get('/product/:productId', async (req: Request, res: Response) => {
     res.json({
       productId,
       reviews: result.rows,
-      totalReviews: parseInt(avgResult.rows[0].total),
+      totalReviews: parseInt(avgResult.rows[0].total, 10) || 0,
       averageRating: parseFloat(avgResult.rows[0].avg_rating) || 0,
     });
   } catch (error) {
@@ -125,12 +188,108 @@ router.get('/product/:productId', async (req: Request, res: Response) => {
  * Delete a review
  * DELETE /api/reviews/:reviewId
  */
+router.get('/merchant', requireMerchant, async (req: Request, res: Response) => {
+  try {
+    const merchantId = req.auth?.userId;
+    const reviewSchemaInfo = await detectReviewSchemaInfo((sql: string) => query(sql));
+    const reviewTextColumn = reviewSchemaInfo.hasReview ? 'r.review' : reviewSchemaInfo.hasComment ? 'r.comment' : "''";
+    const reviewTitleColumn = reviewSchemaInfo.hasTitle ? 'r.title' : "''";
+    const reviewImagesColumn = reviewSchemaInfo.hasReviewImages ? 'r.review_images' : "'[]'::jsonb";
+    const verifiedPurchaseColumn = reviewSchemaInfo.hasIsVerifiedPurchase ? 'r.is_verified_purchase' : 'TRUE';
+
+    const result = await query(
+      `SELECT r.id, r.rating, ${reviewTitleColumn} as title, ${reviewTextColumn} as comment, ${reviewImagesColumn} as "reviewImages", ${verifiedPurchaseColumn} as "isVerifiedPurchase",
+              r.created_at as "createdAt", r.product_id as "productId", u.name as "userName", u.email as "userEmail"
+       FROM reviews r
+       LEFT JOIN users u ON r.user_id = u.id
+       WHERE r.merchant_id = $1
+       ORDER BY r.created_at DESC`,
+      [merchantId]
+    );
+
+    res.json({ reviews: result.rows });
+  } catch (error) {
+    logger.error('Merchant reviews error:', error);
+    res.status(500).json({ error: 'Failed to fetch merchant reviews' });
+  }
+});
+
+router.post('/:reviewId/reply', requireMerchant, async (req: Request, res: Response) => {
+  try {
+    const { reviewId } = req.params;
+    const { message } = req.body as { message?: string };
+    const merchantId = req.auth?.userId;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: 'Reply message is required' });
+    }
+
+    const reviewResult = await query('SELECT id FROM reviews WHERE id = $1 AND merchant_id = $2', [reviewId, merchantId]);
+    if (reviewResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Review not found' });
+    }
+
+    await query(
+      `INSERT INTO review_replies (id, review_id, merchant_id, message) VALUES ($1, $2, $3, $4)`,
+      [uuidv4(), reviewId, merchantId, message.trim()]
+    );
+
+    res.json({ message: 'Reply saved' });
+  } catch (error) {
+    logger.error('Reply review error:', error);
+    res.status(500).json({ error: 'Failed to save reply' });
+  }
+});
+
+router.patch('/:reviewId', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { reviewId } = req.params;
+    const userId = req.auth?.userId;
+    const { rating, title, review, review_images } = req.body as { rating?: number; title?: string; review?: string; review_images?: string[] };
+    const reviewText = String(review || '').trim();
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    if (!rating && rating !== 0) {
+      return res.status(400).json({ error: 'Rating is required' });
+    }
+
+    if (rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+    }
+
+    if (reviewText.length < 20 || reviewText.length > 1000) {
+      return res.status(400).json({ error: 'Review text must be between 20 and 1000 characters' });
+    }
+
+    const reviewResult = await query('SELECT * FROM reviews WHERE id = $1 AND user_id = $2', [reviewId, userId]);
+    if (reviewResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Review not found' });
+    }
+
+    const reviewImagesJson = Array.isArray(review_images)
+      ? review_images.filter((img) => typeof img === 'string')
+      : [];
+
+    await query(
+      `UPDATE reviews SET rating = $1, title = $2, review = $3, review_images = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5`,
+      [rating, title || null, reviewText, JSON.stringify(reviewImagesJson), reviewId]
+    );
+
+    res.json({ message: 'Review updated' });
+  } catch (error) {
+    logger.error('Update review error:', error);
+    res.status(500).json({ error: 'Failed to update review' });
+  }
+});
+
 router.delete('/:reviewId', requireAuth, async (req: Request, res: Response) => {
   try {
     const { reviewId } = req.params;
     const userId = req.auth?.userId;
 
-    // Check if user owns the review
     const reviewResult = await query(
       'SELECT * FROM reviews WHERE id = $1 AND user_id = $2',
       [reviewId, userId]
@@ -142,21 +301,21 @@ router.delete('/:reviewId', requireAuth, async (req: Request, res: Response) => 
 
     const productId = reviewResult.rows[0].product_id;
 
-    // Delete review
     await query('DELETE FROM reviews WHERE id = $1', [reviewId]);
 
-    // Recalculate average rating
     const avgResult = await query(
-      'SELECT AVG(rating) as avg_rating FROM reviews WHERE product_id = $1',
+      'SELECT COUNT(*) as total, AVG(rating) as avg_rating FROM reviews WHERE product_id = $1',
       [productId]
     );
 
-    const avgRating = parseFloat(avgResult.rows[0].avg_rating) || 0;
+    const totalReviews = parseInt(avgResult.rows[0].total, 10) || 0;
+    const averageRating = parseFloat(avgResult.rows[0].avg_rating) || 0;
 
-    // Update product avg_rating
     await query(
-      'UPDATE products SET avg_rating = $1 WHERE id = $2',
-      [avgRating.toFixed(2), productId]
+      `UPDATE products
+       SET avg_rating = $1, review_count = $2
+       WHERE id = $3`,
+      [Number(averageRating.toFixed(2)), totalReviews, productId]
     );
 
     res.json({ message: 'Review deleted' });

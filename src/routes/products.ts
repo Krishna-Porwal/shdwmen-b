@@ -110,6 +110,22 @@ router.get('/', async (req: Request, res: Response) => {
       params.push(`%${search}%`);
     }
 
+    if (req.query.tag) {
+      sql += ` AND tags::text ILIKE $${params.length + 1}`;
+      params.push(`%${String(req.query.tag)}%`);
+    }
+
+    if (req.query.ids) {
+      const ids = String(req.query.ids)
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean);
+      if (ids.length > 0) {
+        sql += ` AND id = ANY($${params.length + 1}::uuid[])`;
+        params.push(ids);
+      }
+    }
+
     if (isSponsored === 'true') {
       sql += ` AND is_sponsored = true`;
     } else if (isSponsored === 'false') {

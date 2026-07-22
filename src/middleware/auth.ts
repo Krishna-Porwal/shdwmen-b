@@ -26,6 +26,22 @@ declare global {
  * SDK. It rejects forged, tampered, or expired tokens before any route-level
  * authorization checks are applied.
  */
+export async function ensureUserExists(userId: string, email?: string, name?: string) {
+  if (!userId) return;
+  const normalizedEmail = email?.trim() || `${userId}@clerk.local`;
+  const normalizedName = (name?.trim() || normalizedEmail || userId).trim();
+
+  await query(
+    `INSERT INTO users (id, name, email, password, role)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (id) DO UPDATE SET
+       name = EXCLUDED.name,
+       email = EXCLUDED.email,
+       updated_at = CURRENT_TIMESTAMP`,
+    [userId, normalizedName, normalizedEmail, 'clerk_auth', 'customer']
+  );
+}
+
 export const verifyClerkToken = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authHeader = req.headers.authorization;
@@ -70,11 +86,25 @@ export const verifyClerkToken = async (req: Request, res: Response, next: NextFu
         });
 
         if (decoded && decoded.sub) {
+          const userId = decoded.sub;
+          const userEmail = decoded.email as string | undefined;
+          const userName = (decoded.name as string | undefined) ||
+            `${(decoded as any).first_name || ''} ${(decoded as any).last_name || ''}`.trim() ||
+            userEmail ||
+            userId;
+
           req.auth = {
-            userId: decoded.sub,
-            email: decoded.email as string | undefined,
+            userId,
+            email: userEmail,
             role: (decoded as any).role as string | undefined,
           };
+
+          try {
+            await ensureUserExists(userId, userEmail, userName);
+          } catch (error: any) {
+            logger.error('[AUTH] Failed to ensure user record exists:', error?.message || error);
+          }
+
           return next();
         }
       } catch (error: any) {
@@ -85,6 +115,11 @@ export const verifyClerkToken = async (req: Request, res: Response, next: NextFu
     const internalAuth = verifyInternalJwt(token);
     if (internalAuth) {
       req.auth = internalAuth;
+      try {
+        await ensureUserExists(internalAuth.userId, internalAuth.email, internalAuth.userId);
+      } catch (error: any) {
+        logger.error('[AUTH] Failed to ensure user record exists for internal token:', error?.message || error);
+      }
       return next();
     }
 

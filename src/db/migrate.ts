@@ -60,6 +60,7 @@ export const createTables = async () => {
         size_stock JSONB DEFAULT '[]',
         stock INT DEFAULT 0,
         avg_rating DECIMAL(3, 2) DEFAULT 0,
+        review_count INT DEFAULT 0,
         sold_count INT DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -204,12 +205,72 @@ export const createTables = async () => {
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         product_id UUID NOT NULL REFERENCES products(id),
         user_id VARCHAR(255) NOT NULL REFERENCES users(id),
-        rating INT CHECK (rating >= 1 AND rating <= 5),
-        comment TEXT,
+        rating INT NOT NULL CHECK (rating >= 1 AND rating <= 5),
+        comment TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
     logger.info('✓ Reviews table created');
+
+    await query(`
+      CREATE TABLE IF NOT EXISTS review_replies (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        review_id UUID NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+        merchant_id VARCHAR(255) NOT NULL REFERENCES users(id),
+        message TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    logger.info('✓ Review replies table created');
+
+    // Categories table for merchant-managed custom categories
+    await query(`
+      CREATE TABLE IF NOT EXISTS categories (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        merchant_id VARCHAR(255) NOT NULL REFERENCES users(id),
+        name VARCHAR(100) NOT NULL,
+        top_category VARCHAR(50),
+        gender VARCHAR(50),
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    logger.info('✓ Categories table created');
+
+    // Campaigns table for merchant sale campaigns and premium bundles
+    await query(`
+      CREATE TABLE IF NOT EXISTS campaigns (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        merchant_id VARCHAR(255) NOT NULL REFERENCES users(id),
+        name VARCHAR(255) NOT NULL,
+        title VARCHAR(255),
+        headline VARCHAR(255),
+        offer_text VARCHAR(255),
+        subtitle TEXT,
+        button_text VARCHAR(255),
+        button_link VARCHAR(255),
+        description TEXT,
+        category_top VARCHAR(50),
+        category VARCHAR(100),
+        gender VARCHAR(50),
+        discount_percent INT DEFAULT 0,
+        discount_type VARCHAR(50) DEFAULT 'percent',
+        discount_value DECIMAL(10, 2) DEFAULT 0,
+        banner_image VARCHAR(255),
+        product_ids UUID[] DEFAULT '{}',
+        selected_categories TEXT[] DEFAULT '{}',
+        product_selection_mode VARCHAR(50) DEFAULT 'category',
+        status VARCHAR(50) DEFAULT 'draft',
+        active BOOLEAN DEFAULT false,
+        start_date TIMESTAMP,
+        end_date TIMESTAMP,
+        created_by VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    logger.info('✓ Campaigns table created');
 
     // Messages table
     await query(`
@@ -255,6 +316,19 @@ export const createTables = async () => {
       await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'active';`);
       await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url VARCHAR(255);`);
       await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS is_sponsored BOOLEAN DEFAULT false;`);
+      await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS review_count INT DEFAULT 0;`);
+      await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS title VARCHAR(255);`);
+      await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS headline VARCHAR(255);`);
+      await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS offer_text VARCHAR(255);`);
+      await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS subtitle TEXT;`);
+      await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS button_text VARCHAR(255);`);
+      await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS button_link VARCHAR(255);`);
+      await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS discount_type VARCHAR(50) DEFAULT 'percent';`);
+      await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS discount_value DECIMAL(10, 2) DEFAULT 0;`);
+      await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS selected_categories TEXT[] DEFAULT '{}';`);
+      await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS product_selection_mode VARCHAR(50) DEFAULT 'category';`);
+      await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'draft';`);
+      await query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS created_by VARCHAR(255);`);
       await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_address JSONB DEFAULT '{}';`);
       await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS address_snapshot JSONB DEFAULT '{}';`);
       await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_snapshot JSONB DEFAULT '[]';`);

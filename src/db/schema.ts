@@ -1,4 +1,4 @@
-import { boolean, index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { boolean, index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 
 export const notifications = pgTable(
   'notifications',
@@ -18,5 +18,21 @@ export const notifications = pgTable(
     merchantIdIdx: index('notifications_merchant_id_idx').on(table.merchantId),
     isReadIdx: index('notifications_is_read_idx').on(table.isRead),
     createdAtIdx: index('notifications_created_at_idx').on(table.createdAt),
+  })
+);
+
+export const reviews = pgTable(
+  'reviews',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    productId: uuid('product_id').notNull(),
+    userId: text('user_id').notNull(),
+    rating: integer('rating').notNull(),
+    comment: text('comment').notNull(),
+    createdAt: timestamp('created_at', { mode: 'date' }).notNull().defaultNow(),
+  },
+  (table) => ({
+    productIdIdx: index('reviews_product_id_idx').on(table.productId),
+    userIdIdx: index('reviews_user_id_idx').on(table.userId),
   })
 );

@@ -1,7 +1,8 @@
 import pino from 'pino';
 import pinoHttp from 'pino-http';
 
-const logger = pino({
+// Use a permissive `any` type to allow legacy logging call patterns across the codebase
+const logger: any = pino({
   level: process.env.LOG_LEVEL || 'info',
   redact: {
     paths: ['req.headers.authorization', 'req.headers.cookie', 'req.headers.x-api-key', 'req.headers.apikey', 'req.headers.api_key'],

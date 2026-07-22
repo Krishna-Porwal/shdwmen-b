@@ -1,7 +1,8 @@
 import express, { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { getClient, query } from '../db/connection';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, ensureUserExists } from '../middleware/auth';
 import { createTables } from '../db/migrate';
 import {
   ORDER_STATUS_FLOW,
@@ -21,6 +22,7 @@ import {
   validateShippingAddress,
 } from '../utils/orderHelpers';
 import { isMissingRelationError, sendServerError } from '../utils/apiError';
+import { detectReviewSchemaInfo, buildReviewJoinCondition, buildReviewSelectExpressions } from '../utils/reviewCompatibility';
 import logger from '../logger';
 
 const router: Router = express.Router();
@@ -142,6 +144,10 @@ async function safeNotifyUsers(
 }
 
 async function getOrderSummaryById(orderId: string, userId: string) {
+  const reviewSchemaInfo = await detectReviewSchemaInfo((sql: string) => query(sql));
+  const reviewExpressions = buildReviewSelectExpressions(reviewSchemaInfo);
+  const reviewJoinCondition = buildReviewJoinCondition(reviewSchemaInfo, '$2');
+
   const result = await query(
     `SELECT o.*,
       (
@@ -154,9 +160,18 @@ async function getOrderSummaryById(orderId: string, userId: string) {
           'product_image', COALESCE((oi.product_snapshot->>'product_image'), p.image_url),
           'size', oi.product_snapshot->>'size',
           'color', oi.product_snapshot->>'color',
-          'snapshot', oi.product_snapshot
+          'snapshot', oi.product_snapshot,
+          'review_id', r.id,
+          'reviewed', r.id IS NOT NULL,
+          'review_rating', r.rating,
+          'review_comment', ${reviewExpressions.reviewText},
+          'review_title', ${reviewExpressions.reviewTitle},
+          'review_images', ${reviewExpressions.reviewImages},
+          'review_verified', ${reviewExpressions.verifiedPurchase}
         )) FILTER (WHERE oi.id IS NOT NULL), '[]'::jsonb)
-        FROM order_items oi JOIN products p ON oi.product_id = p.id
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        ${reviewJoinCondition}
         WHERE oi.order_id = o.id
       ) as items,
       (
@@ -277,6 +292,8 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
       return res.status(401).json({ error: 'User ID not found' });
     }
 
+    await ensureUserExists(userId, req.auth?.email);
+
     if (!items || items.length === 0) {
       return res.status(400).json({ error: 'Order items required' });
     }
@@ -298,7 +315,7 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
     const client = await getClient();
     const userRowRes = await client.query('SELECT name, email FROM users WHERE id = $1', [userId]);
     const dbUser = userRowRes.rows[0] || {};
-    const validatedShippingAddress = normalizeShippingAddress(shipping_address, dbUser.email);
+    const validatedShippingAddress = normalizeShippingAddress(shipping_address, dbUser.email || shipping_address?.email);
     if (!validatedShippingAddress) {
       client.release();
       return res.status(400).json({ error: 'Invalid shipping address payload' });
@@ -321,6 +338,11 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
         };
       }> = [];
 
+      const idempotencyHash = crypto
+        .createHash('sha256')
+        .update(JSON.stringify(items))
+        .digest('hex');
+
       if (idempotencyKey) {
         const idempotencyResult = await client.query(
           'SELECT order_id FROM idempotency_keys WHERE user_id = $1 AND idempotency_key = $2 FOR UPDATE',
@@ -337,7 +359,7 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
           `INSERT INTO idempotency_keys (id, user_id, idempotency_key, request_hash)
            VALUES ($1, $2, $3, $4)
            ON CONFLICT (idempotency_key) DO NOTHING`,
-          [uuidv4(), userId, idempotencyKey, JSON.stringify(items)]
+          [uuidv4(), userId, idempotencyKey, idempotencyHash]
         );
       }
 
@@ -511,7 +533,9 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
       client.release();
     }
   } catch (error) {
-    logger.error('Create order error:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error && error.stack ? error.stack : undefined;
+    logger.error({ err: error, message: errorMessage, stack: errorStack }, 'Create order error details');
     if (error instanceof Error) {
       if (error.message.includes('shipping_address')) {
         return res.status(400).json({ error: 'Shipping address is required' });
