@@ -25,6 +25,11 @@ interface ProductRequest {
   mrp?: number;
   category_top: string;
   category: string;
+  subcategory?: string;
+  slug?: string;
+  attributes?: Record<string, any>;
+  colors?: string[];
+  sizes?: string[];
   stock?: number;
   size_stock?: SizeStockItem[];
   estimated_delivery_days?: number;
