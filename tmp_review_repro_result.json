@@ -1,0 +1,90 @@
+{
+  "detectedSchema": {
+    "hasTitle": false,
+    "hasReview": false,
+    "hasComment": true,
+    "hasReviewImages": false,
+    "hasIsVerifiedPurchase": false,
+    "hasUpdatedAt": false
+  },
+  "existingReviewId": "1b53871b-a92a-47ac-b095-83ccd79d0c85",
+  "results": [
+    {
+      "variant": "rating-only",
+      "requestBody": {
+        "orderItemId": "a9fb4770-da63-46b8-b694-463e809cf521",
+        "productId": "f29145a8-5d2f-4257-9389-e6ff68ad416b",
+        "rating": 5
+      },
+      "reviewSql": {
+        "sql": "UPDATE reviews SET rating = $1, comment = $2 WHERE id = $3 AND user_id = $4",
+        "params": [
+          5,
+          "",
+          "1b53871b-a92a-47ac-b095-83ccd79d0c85",
+          "user_3GgHSTRX3ulqHfCXZTu5QrOj027"
+        ]
+      },
+      "response": {
+        "status": 500,
+        "body": {
+          "error": "Failed to save review",
+          "details": "could not determine data type of parameter $2"
+        }
+      }
+    },
+    {
+      "variant": "rating + review",
+      "requestBody": {
+        "orderItemId": "a9fb4770-da63-46b8-b694-463e809cf521",
+        "productId": "f29145a8-5d2f-4257-9389-e6ff68ad416b",
+        "rating": 4,
+        "review": "This is a text-only review that should be accepted if images are not required."
+      },
+      "reviewSql": {
+        "sql": "UPDATE reviews SET rating = $1, comment = $2 WHERE id = $3 AND user_id = $4",
+        "params": [
+          4,
+          "This is a text-only review that should be accepted if images are not required.",
+          "1b53871b-a92a-47ac-b095-83ccd79d0c85",
+          "user_3GgHSTRX3ulqHfCXZTu5QrOj027"
+        ]
+      },
+      "response": {
+        "status": 500,
+        "body": {
+          "error": "Failed to save review",
+          "details": "could not determine data type of parameter $2"
+        }
+      }
+    },
+    {
+      "variant": "rating + review + image",
+      "requestBody": {
+        "orderItemId": "a9fb4770-da63-46b8-b694-463e809cf521",
+        "productId": "f29145a8-5d2f-4257-9389-e6ff68ad416b",
+        "rating": 5,
+        "review": "Review text with image upload test.",
+        "review_images": [
+          "https://res.cloudinary.com/demo/image/upload/v123456/test.jpg"
+        ]
+      },
+      "reviewSql": {
+        "sql": "UPDATE reviews SET rating = $1, comment = $2 WHERE id = $3 AND user_id = $4",
+        "params": [
+          5,
+          "Review text with image upload test.",
+          "1b53871b-a92a-47ac-b095-83ccd79d0c85",
+          "user_3GgHSTRX3ulqHfCXZTu5QrOj027"
+        ]
+      },
+      "response": {
+        "status": 500,
+        "body": {
+          "error": "Failed to save review",
+          "details": "could not determine data type of parameter $2"
+        }
+      }
+    }
+  ]
+}

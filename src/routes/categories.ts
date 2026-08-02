@@ -47,9 +47,14 @@ const extractImageUrl = (row: any): string | null => {
       }
     }
     if (typeof item === 'object' && item !== null) {
-      const candidate = item as { url?: string; optimizedUrl?: string };
+      const candidate = item as { url?: string; optimizedUrl?: string; secure_url?: string };
       if (typeof candidate.optimizedUrl === 'string' && candidate.optimizedUrl.trim()) {
         const v = candidate.optimizedUrl.trim();
+        if (/^https?:\/\//i.test(v) || v.startsWith('/')) return v;
+        try { return getImageUrl(v); } catch { return v; }
+      }
+      if (typeof candidate.secure_url === 'string' && candidate.secure_url.trim()) {
+        const v = candidate.secure_url.trim();
         if (/^https?:\/\//i.test(v) || v.startsWith('/')) return v;
         try { return getImageUrl(v); } catch { return v; }
       }
@@ -64,40 +69,85 @@ const extractImageUrl = (row: any): string | null => {
   return null;
 };
 
+const CACHE_TTL_MS = 60 * 1000; // 1 minute cache for category collages
+let cachedCategoryCollages: any[] | null = null;
+let cachedCategoryCollagesAt = 0;
+
 const buildCollection = async (title: string, extraCondition: string | null, usedImages?: Set<string>) => {
   const whereClause = extraCondition ? `WHERE status != 'inactive' AND ${extraCondition}` : `WHERE status != 'inactive'`;
-  const productsResult = await query(
-    `SELECT image_url, images, imgs
-     FROM products
-     ${whereClause}
-     ORDER BY created_at DESC
-     LIMIT 50`
-  );
+
+  const queryProductImages = async (condition: string, limit = 200) => {
+    const result = await query(
+      `SELECT image_url, images, imgs
+       FROM products
+       WHERE status != 'inactive' AND ${condition}
+       ORDER BY created_at DESC
+       LIMIT ${limit}`
+    );
+    return result.rows
+      .map((row: any) => extractImageUrl(row))
+      .filter((url: string | null): url is string => Boolean(url));
+  };
+
   const countResult = await query(
     `SELECT COUNT(*) as count
      FROM products
      ${whereClause}`
   );
 
-  const imgs = productsResult.rows
-    .map((row: any) => extractImageUrl(row))
-    .filter((url: string | null): url is string => Boolean(url));
-
-  // Make images unique and avoid reusing images already assigned to other collections
+  const imgs = await queryProductImages(extraCondition ?? 'TRUE');
   const uniqueImgs = Array.from(new Set(imgs));
-  let filtered = uniqueImgs.filter((u) => !(usedImages && usedImages.has(u))).slice(0, 4);
-  // If no unique candidates remain, fall back to original set to ensure we return images
-  if (filtered.length === 0) {
-    // No unique candidates — pick a shuffled subset so different collections can show varied images
-    const shuffled = uniqueImgs.slice().sort(() => Math.random() - 0.5);
-    filtered = shuffled.slice(0, 4);
+  const filtered: string[] = [];
+
+  const addUniqueImages = (urls: string[]) => {
+    for (const url of urls) {
+      if (filtered.length >= 4) break;
+      if (!filtered.includes(url) && !(usedImages && usedImages.has(url))) {
+        filtered.push(url);
+      }
+    }
+  };
+
+  addUniqueImages(uniqueImgs);
+
+  if (filtered.length < 4 && extraCondition) {
+    const topCategoryFallback = extraCondition.includes("category_top ILIKE '%men%'")
+      ? "category_top ILIKE '%men%'"
+      : extraCondition.includes("category_top ILIKE '%boys%'")
+      ? "category_top ILIKE '%boys%'"
+      : null;
+
+    if (topCategoryFallback) {
+      const fallbackImgs = await queryProductImages(topCategoryFallback);
+      addUniqueImages(Array.from(new Set(fallbackImgs)));
+    }
   }
-  if (usedImages) filtered.forEach((u) => usedImages.add(u));
+
+  if (filtered.length < 4) {
+    const allImgs = await queryProductImages('TRUE', 400);
+    addUniqueImages(Array.from(new Set(allImgs)));
+  }
+
+  // If still no images, retry without usedImages constraint for this specific collection
+  if (filtered.length === 0) {
+    const allImgs = await queryProductImages('TRUE', 400);
+    const fallbackImages = Array.from(new Set(allImgs));
+    for (const url of fallbackImages) {
+      if (filtered.length >= 4) break;
+      if (!filtered.includes(url)) {
+        filtered.push(url);
+      }
+    }
+  }
+
+  const finalImages = Array.from(new Set(filtered)).slice(0, 4);
+
+  if (usedImages) finalImages.forEach((u) => usedImages.add(u));
 
   return {
     title,
     productCount: Number(countResult.rows[0]?.count || 0),
-    collageImages: filtered,
+    collageImages: finalImages,
   };
 };
 
@@ -162,23 +212,31 @@ router.get('/', async (req: Request, res: Response) => {
 
 router.get('/collage', async (req: Request, res: Response) => {
   try {
+    const now = Date.now();
+    if (cachedCategoryCollages && now - cachedCategoryCollagesAt < CACHE_TTL_MS) {
+      return res.json(cachedCategoryCollages);
+    }
+
     const usedImages = new Set<string>();
     const collections = [] as any[];
 
     collections.push(await buildCollection(
       'MENS FORMAL',
-      `category_top = 'Men' AND (tags::text ILIKE '%formal%' OR category ILIKE '%shirt%' OR category ILIKE '%blazer%' OR category ILIKE '%suit%' OR category ILIKE '%trouser%')`,
+      `category_top ILIKE '%men%' AND (tags::text ILIKE '%formal%' OR subcategory ILIKE '%formal%' OR category ILIKE '%shirt%' OR category ILIKE '%blazer%' OR category ILIKE '%suit%' OR category ILIKE '%trouser%' OR attributes::text ILIKE '%formal%')`,
       usedImages
     ));
 
     collections.push(await buildCollection(
       'MENS CASUAL',
-      `category_top = 'Men' AND (tags::text ILIKE '%casual%' OR category ILIKE '%t-shirt%' OR category ILIKE '%jean%' OR category ILIKE '%cargo%' OR category ILIKE '%hoodie%' OR category ILIKE '%sweatshirt%')`,
+      `category_top ILIKE '%men%' AND (tags::text ILIKE '%casual%' OR subcategory ILIKE '%casual%' OR category ILIKE '%t-shirt%' OR category ILIKE '%jean%' OR category ILIKE '%cargo%' OR category ILIKE '%hoodie%' OR category ILIKE '%sweatshirt%' OR attributes::text ILIKE '%casual%')`,
       usedImages
     ));
 
     collections.push(await buildCollection('NEW IN', null, usedImages));
-    collections.push(await buildCollection('BOYS', `category_top = 'Boys' OR gender ILIKE '%boy%' OR category ILIKE '%boys%'`, usedImages));
+    collections.push(await buildCollection('BOYS', `category_top ILIKE '%boys%' OR gender ILIKE '%boy%' OR category ILIKE '%boys%'`, usedImages));
+
+    cachedCategoryCollages = collections;
+    cachedCategoryCollagesAt = now;
 
     res.json(collections);
   } catch (error) {

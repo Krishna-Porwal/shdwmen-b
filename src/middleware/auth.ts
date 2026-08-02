@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { verifyToken } from '@clerk/backend';
 import jwt, { JwtPayload } from 'jsonwebtoken';
 import { query } from '../db/connection';
+import util from 'util';
 import { CLERK_SECRET_KEY, CLERK_API_URL, JWT_SECRET } from '../config';
 import logger from '../logger';
 
@@ -28,18 +29,53 @@ declare global {
  */
 export async function ensureUserExists(userId: string, email?: string, name?: string) {
   if (!userId) return;
-  const normalizedEmail = email?.trim() || `${userId}@clerk.local`;
-  const normalizedName = (name?.trim() || normalizedEmail || userId).trim();
 
-  await query(
-    `INSERT INTO users (id, name, email, password, role)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (id) DO UPDATE SET
-       name = EXCLUDED.name,
-       email = EXCLUDED.email,
-       updated_at = CURRENT_TIMESTAMP`,
-    [userId, normalizedName, normalizedEmail, 'clerk_auth', 'customer']
-  );
+  const normalizedEmail = email?.trim() || null;
+  // Avoid treating Clerk internal IDs as display names. If the provided
+  // name looks like a Clerk ID (e.g. starts with 'user_' or 'merchant_'),
+  // ignore it so the frontend falls back to 'Anonymous Customer'.
+  let normalizedName: string | null = null;
+  if (name) {
+    const n = name.trim();
+    if (n && !/^user_[A-Za-z0-9]+$/.test(n) && !/^merchant_[A-Za-z0-9]+$/.test(n)) {
+      normalizedName = n;
+    }
+  }
+
+  try {
+    await query(
+      `INSERT INTO users (id, name, email, password, role)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         email = EXCLUDED.email,
+         updated_at = CURRENT_TIMESTAMP`,
+      [userId, normalizedName, normalizedEmail, 'clerk_auth', 'customer']
+    );
+  } catch (err: any) {
+    logger.warn('[ensureUserExists] insert error code:', err?.code, 'constraint:', err?.constraint, 'message:', err?.message?.slice?.(0,200));
+    try {
+      logger.error('[ensureUserExists] full error:', util.inspect(err, { showHidden: true, depth: null }));
+    } catch (e) {
+      logger.error('[ensureUserExists] error logging failed:', e);
+    }
+    // If a unique-violation occurs (commonly email unique constraint),
+    // avoid inserting a second row with the same email. Instead, update
+    // the existing user record that already holds that email so we don't
+    // violate the NOT NULL constraint on `email` in fallback inserts.
+    if (err && err.code === '23505' && normalizedEmail) {
+      try {
+        await query(
+          `UPDATE users SET name = COALESCE($1, name), updated_at = CURRENT_TIMESTAMP WHERE email = $2`,
+          [normalizedName, normalizedEmail]
+        );
+        return;
+      } catch (inner) {
+        // If updating the existing user also fails, rethrow original error below
+      }
+    }
+    throw err;
+  }
 }
 
 export const verifyClerkToken = async (req: Request, res: Response, next: NextFunction) => {

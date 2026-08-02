@@ -203,6 +203,11 @@ router.post('/', requireMerchant, async (req: Request<{}, {}, ProductRequest>, r
       mrp,
       category_top,
       category,
+      subcategory,
+      slug,
+      attributes,
+      colors,
+      sizes,
       size_stock,
       estimated_delivery_days,
       status,
@@ -235,9 +240,9 @@ router.post('/', requireMerchant, async (req: Request<{}, {}, ProductRequest>, r
     const imageUrl = imgsArray[0] || null;
 
     const insertSql = `INSERT INTO products
-       (id, merchant_id, name, description, category_top, category, gender, tags, mrp, price,
+       (id, merchant_id, name, description, category_top, category, subcategory, slug, gender, tags, colors, sizes, attributes, mrp, price,
         estimated_delivery_days, status, is_sponsored, image_url, imgs, images, size_stock, stock)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`;
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`;
 
     logger.info('[PRODUCTS] Insert SQL:', insertSql);
     logger.info('[PRODUCTS] Insert params:', [
@@ -247,8 +252,13 @@ router.post('/', requireMerchant, async (req: Request<{}, {}, ProductRequest>, r
       description,
       category_top,
       category,
+      subcategory || null,
+      slug || null,
       resolvedGender,
       tags || [],
+      colors || [],
+      sizes || [],
+      JSON.stringify(attributes || {}),
       mrp || price,
       price,
       estimated_delivery_days || 0,
@@ -263,9 +273,9 @@ router.post('/', requireMerchant, async (req: Request<{}, {}, ProductRequest>, r
 
     await query(
       `INSERT INTO products
-       (id, merchant_id, name, description, category_top, category, gender, tags, mrp, price,
+       (id, merchant_id, name, description, category_top, category, subcategory, slug, gender, tags, colors, sizes, attributes, mrp, price,
         estimated_delivery_days, status, is_sponsored, image_url, imgs, images, size_stock, stock)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
       [
         productId,
         merchantId,
@@ -273,8 +283,13 @@ router.post('/', requireMerchant, async (req: Request<{}, {}, ProductRequest>, r
         description,
         category_top,
         category,
+        subcategory || null,
+        slug || null,
         resolvedGender,
         tags || [],
+        colors || [],
+        sizes || [],
+        JSON.stringify(attributes || {}),
         mrp || price,
         price,
         estimated_delivery_days || 0,
@@ -316,6 +331,11 @@ router.put('/:id', requireMerchant, async (req: Request<{ id: string }, {}, Part
       mrp,
       category_top,
       category,
+      subcategory,
+      slug,
+      attributes,
+      colors,
+      sizes,
       size_stock,
       estimated_delivery_days,
       status,
@@ -376,6 +396,31 @@ router.put('/:id', requireMerchant, async (req: Request<{ id: string }, {}, Part
     if (category !== undefined) {
       updates.push(`category = $${paramCount}`);
       params.push(category);
+      paramCount++;
+    }
+    if (subcategory !== undefined) {
+      updates.push(`subcategory = $${paramCount}`);
+      params.push(subcategory);
+      paramCount++;
+    }
+    if (slug !== undefined) {
+      updates.push(`slug = $${paramCount}`);
+      params.push(slug);
+      paramCount++;
+    }
+    if (attributes !== undefined) {
+      updates.push(`attributes = $${paramCount}`);
+      params.push(JSON.stringify(attributes));
+      paramCount++;
+    }
+    if (colors !== undefined) {
+      updates.push(`colors = $${paramCount}`);
+      params.push(colors);
+      paramCount++;
+    }
+    if (sizes !== undefined) {
+      updates.push(`sizes = $${paramCount}`);
+      params.push(sizes);
       paramCount++;
     }
     if (size_stock !== undefined) {

@@ -49,6 +49,11 @@ export const createTables = async () => {
         category VARCHAR(100),
         gender VARCHAR(50),
         tags TEXT[] DEFAULT '{}',
+        colors TEXT[] DEFAULT '{}',
+        sizes TEXT[] DEFAULT '{}',
+        subcategory VARCHAR(100),
+        attributes JSONB DEFAULT '{}',
+        slug VARCHAR(255),
         mrp DECIMAL(10, 2) DEFAULT 0,
         price DECIMAL(10, 2) NOT NULL,
         estimated_delivery_days INT DEFAULT 0,
@@ -207,10 +212,19 @@ export const createTables = async () => {
         user_id VARCHAR(255) NOT NULL REFERENCES users(id),
         rating INT NOT NULL CHECK (rating >= 1 AND rating <= 5),
         comment TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        title VARCHAR(255),
+        review_images JSONB DEFAULT '[]',
+        is_verified_purchase BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
     logger.info('✓ Reviews table created');
+
+    await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS title VARCHAR(255);`);
+    await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS review_images JSONB DEFAULT '[]';`);
+    await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS is_verified_purchase BOOLEAN DEFAULT TRUE;`);
+    await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;`);
 
     await query(`
       CREATE TABLE IF NOT EXISTS review_replies (
@@ -311,6 +325,11 @@ export const createTables = async () => {
       await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS category_top VARCHAR(50);`);
       await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS gender VARCHAR(50);`);
       await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';`);
+      await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS colors TEXT[] DEFAULT '{}';`);
+      await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS sizes TEXT[] DEFAULT '{}';`);
+      await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS subcategory VARCHAR(100);`);
+      await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS attributes JSONB DEFAULT '{}';`);
+      await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS slug VARCHAR(255);`);
       await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS mrp DECIMAL(10, 2) DEFAULT 0;`);
       await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS estimated_delivery_days INT DEFAULT 0;`);
       await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'active';`);

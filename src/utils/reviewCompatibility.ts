@@ -77,7 +77,11 @@ export function buildReviewInsertConfig(
     params.push(true);
   }
 
-  const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ');
+  const placeholders = columns.map((col, index) => {
+    const idx = index + 1;
+    if (col === 'review_images') return `$${idx}::jsonb`;
+    return `$${idx}`;
+  }).join(', ');
 
   return {
     text: `INSERT INTO reviews (${columns.join(', ')}) VALUES (${placeholders})`,
