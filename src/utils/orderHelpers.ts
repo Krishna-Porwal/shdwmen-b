@@ -83,12 +83,13 @@ export function estimateDeliveryDate(createdAt: Date, estimatedDays = 5): string
 export function normalizeShippingAddress(address: any, fallbackEmail?: string) {
   if (!address || typeof address !== 'object') return null;
 
-  const fullName = address.name?.trim() || `${address.firstName || ''} ${address.lastName || ''}`.trim();
+  const fullName = address.fullName?.trim() || address.name?.trim() || `${address.firstName || ''} ${address.lastName || ''}`.trim();
   const [firstName, ...lastParts] = fullName.split(' ').filter(Boolean);
   const lastName = lastParts.join(' ');
   const email = address.email || address.email_address || fallbackEmail || '';
 
   return {
+    fullName: fullName || '',
     firstName: firstName || '',
     lastName: lastName || '',
     email,
@@ -96,7 +97,8 @@ export function normalizeShippingAddress(address: any, fallbackEmail?: string) {
     address: address.address || address.street || '',
     city: address.city || '',
     state: address.state || '',
-    pinCode: address.pinCode || address.pincode || address.postalCode || '',
+    postalCode: address.postalCode || address.pinCode || address.pincode || '',
+    country: address.country || '',
     rawName: fullName,
   };
 }
@@ -104,12 +106,12 @@ export function normalizeShippingAddress(address: any, fallbackEmail?: string) {
 export function buildShippingAddressSnapshot(address: any) {
   const normalized = normalizeShippingAddress(address);
   return {
-    name: `${normalized?.firstName || ''} ${normalized?.lastName || ''}`.trim() || normalized?.rawName || '',
+    name: normalized?.fullName || `${normalized?.firstName || ''} ${normalized?.lastName || ''}`.trim() || normalized?.rawName || '',
     phone: normalized?.phone || '',
     address: normalized?.address || '',
     city: normalized?.city || '',
     state: normalized?.state || '',
-    pincode: normalized?.pinCode || '',
+    pincode: normalized?.postalCode || '',
     email: normalized?.email || '',
   };
 }
@@ -201,8 +203,8 @@ export function validateShippingAddress(address: any, fallbackEmail?: string): {
   if (!normalized.state || normalized.state.length < 1) {
     errors.push('Invalid state');
   }
-  if (!normalized.pinCode || !/^[0-9]{6}$/.test(normalized.pinCode)) {
-    errors.push('Invalid PIN code');
+  if (!normalized.postalCode || !/^[0-9]{6}$/.test(normalized.postalCode)) {
+    errors.push('Invalid postal code');
   }
 
   return {

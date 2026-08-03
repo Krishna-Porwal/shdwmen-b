@@ -33,19 +33,20 @@ interface OrderItemRequest {
 }
 
 interface ShippingAddress {
-  firstName: string;
-  lastName: string;
+  fullName: string;
   email: string;
-  phone: string;
+  phone?: string | null;
   address: string;
   city: string;
   state: string;
-  pinCode: string;
-  paymentMethod: string;
+  postalCode: string;
+  country: string;
+  paymentMethod?: string;
 }
 
 interface CreateOrderRequest {
   items: OrderItemRequest[];
+  shipping?: ShippingAddress;
   shipping_address?: ShippingAddress;
   payment_method?: string;
   paymentMethod?: string;
@@ -271,6 +272,7 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
   try {
     const {
       items,
+      shipping,
       shipping_address,
       payment_method,
       paymentMethod,
@@ -287,12 +289,47 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
     const normalizedPaymentId = paymentId || null;
     const normalizedRazorpayOrderId = razorpayOrderId || null;
     const normalizedRazorpaySignature = razorpaySignature || null;
+    const shippingAddress = (shipping || shipping_address) as ShippingAddress | undefined;
 
     if (!userId) {
       return res.status(401).json({ error: 'User ID not found' });
     }
 
-    await ensureUserExists(userId, req.auth?.email);
+    if (!shippingAddress) {
+      return res.status(400).json({ error: 'Shipping information is required' });
+    }
+
+    const normalizedShippingAddress = normalizeShippingAddress(shippingAddress, req.auth?.email);
+    if (!normalizedShippingAddress) {
+      return res.status(400).json({ error: 'Invalid shipping address payload' });
+    }
+
+    const userData = {
+      id: userId,
+      name: normalizedShippingAddress.fullName.trim(),
+      email: normalizedShippingAddress.email.trim().toLowerCase(),
+      phone: normalizedShippingAddress.phone?.trim() || null,
+    };
+
+    console.log('Incoming Request:', req.body);
+    console.log('Shipping Data:', normalizedShippingAddress);
+    console.log('User Data Before Insert:', userData);
+    logger.info('[ORDERS][create] user=%s shipping=%o userData=%o paymentMethod=%s itemCount=%d',
+      userId,
+      normalizedShippingAddress,
+      userData,
+      normalizedPaymentMethod,
+      items?.length || 0
+    );
+
+    try {
+      await ensureUserExists(userId, userData.email, userData.name, userData.phone || undefined);
+    } catch (userError) {
+      if (userError instanceof Error && userError.message.includes('Email is required')) {
+        return res.status(400).json({ error: userError.message });
+      }
+      throw userError;
+    }
 
     if (!items || items.length === 0) {
       return res.status(400).json({ error: 'Order items required' });
@@ -315,7 +352,7 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
     const client = await getClient();
     const userRowRes = await client.query('SELECT name, email FROM users WHERE id = $1', [userId]);
     const dbUser = userRowRes.rows[0] || {};
-    const validatedShippingAddress = normalizeShippingAddress(shipping_address, dbUser.email || shipping_address?.email);
+    const validatedShippingAddress = normalizeShippingAddress(normalizedShippingAddress, dbUser.email || normalizedShippingAddress?.email);
     if (!validatedShippingAddress) {
       client.release();
       return res.status(400).json({ error: 'Invalid shipping address payload' });
@@ -406,8 +443,8 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
 
       // Resolve customer name/email with priority: shipping address -> Clerk/users table -> null
       const dbUser = (await client.query('SELECT name, email FROM users WHERE id = $1', [userId])).rows[0] || {};
-      const customerName = (addressSnapshot && addressSnapshot.name) || dbUser.name || null;
-      const customerEmail = (addressSnapshot && addressSnapshot.email) || dbUser.email || null;
+      const customerName = addressSnapshot.name || validatedShippingAddress.fullName || dbUser.name || 'Customer';
+      const customerEmail = addressSnapshot.email || validatedShippingAddress.email || dbUser.email || null;
 
       await client.query(
         `INSERT INTO orders (
@@ -426,7 +463,7 @@ router.post('/', requireAuth, async (req: Request<{}, {}, CreateOrderRequest>, r
           dbPaymentMethod === 'razorpay' ? normalizedPaymentId : null,
           dbPaymentMethod === 'razorpay' ? normalizedRazorpayOrderId : null,
           dbPaymentMethod === 'razorpay' ? normalizedRazorpaySignature : null,
-          JSON.stringify(shipping_address),
+          JSON.stringify(validatedShippingAddress),
           JSON.stringify(addressSnapshot),
           JSON.stringify(orderSnapshot),
           estimatedDeliveryDate,

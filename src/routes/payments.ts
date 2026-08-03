@@ -14,6 +14,7 @@ import {
   checkProductStock,
   calculateItemSubtotal,
   calculateOrderAmounts,
+  normalizeShippingAddress,
   validateShippingAddress,
   estimateDeliveryDate,
 } from '../utils/orderHelpers';
@@ -22,10 +23,17 @@ import logger from '../logger';
 
 const router: Router = express.Router();
 
+interface CustomerData {
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+}
+
 interface PaymentCreateRequest {
   amount: number;
   items: Array<{ product_id: string; quantity: number }>;
-  shipping_address: any;
+  shipping?: any;
+  shipping_address?: any;
   idempotency_key?: string;
 }
 
@@ -34,7 +42,8 @@ interface PaymentVerifyRequest {
   razorpay_payment_id: string;
   razorpay_signature: string;
   items: Array<{ product_id: string; quantity: number }>;
-  shipping_address: any;
+  shipping?: any;
+  shipping_address?: any;
   idempotency_key?: string;
 }
 
@@ -132,17 +141,52 @@ async function safeNotifyUsers(
 // Create Razorpay order
 router.post('/razorpay/create-order', requireAuth, async (req: Request<{}, {}, PaymentCreateRequest>, res: Response) => {
   try {
-    const { amount, items, shipping_address } = req.body;
+    const { amount, items, shipping, shipping_address } = req.body;
     const idempotencyKey = String(req.headers['idempotency-key'] || req.body.idempotency_key || '').trim();
     const userId = req.auth?.userId;
+    const shippingAddress = shipping || shipping_address;
 
     if (!userId) {
       return res.status(401).json({ error: 'User ID not found' });
     }
 
-    await ensureUserExists(userId, req.auth?.email);
+    if (!shippingAddress) {
+      return res.status(400).json({ error: 'Shipping information is required' });
+    }
 
-    const addressValidation = validateShippingAddress(shipping_address);
+    const normalizedShippingAddress = normalizeShippingAddress(shippingAddress, req.auth?.email);
+    if (!normalizedShippingAddress) {
+      return res.status(400).json({ error: 'Invalid shipping address' });
+    }
+
+    const userData = {
+      id: userId,
+      name: normalizedShippingAddress.fullName.trim(),
+      email: normalizedShippingAddress.email.trim().toLowerCase(),
+      phone: normalizedShippingAddress.phone?.trim() || null,
+    };
+
+    console.log('Incoming Request:', req.body);
+    console.log('Shipping Data:', normalizedShippingAddress);
+    console.log('User Data Before Insert:', userData);
+    logger.info('[PAYMENTS][create-order] user=%s shipping=%o userData=%o idempotency=%s payload=%o',
+      userId,
+      normalizedShippingAddress,
+      userData,
+      idempotencyKey,
+      { amount, items, shipping: normalizedShippingAddress ? '[REDACTED]' : null }
+    );
+
+    try {
+      await ensureUserExists(userId, userData.email, userData.name, userData.phone || undefined);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('Email is required')) {
+        return res.status(400).json({ error: e.message });
+      }
+      logger.warn('[PAYMENTS][create-order] ensureUserExists failed: %o', e);
+    }
+
+    const addressValidation = validateShippingAddress(normalizedShippingAddress);
     if (!addressValidation.valid) {
       return res.status(400).json({ error: 'Invalid shipping address', details: addressValidation.errors });
     }
@@ -178,7 +222,7 @@ router.post('/razorpay/create-order', requireAuth, async (req: Request<{}, {}, P
 
     const requestHash = crypto
       .createHash('sha256')
-      .update(JSON.stringify({ amount, items, shipping_address }))
+      .update(JSON.stringify({ amount, items, shippingAddress }))
       .digest('hex');
 
     const existingIdempotency = idempotencyKey
@@ -236,15 +280,44 @@ router.post('/razorpay/create-order', requireAuth, async (req: Request<{}, {}, P
 // Verify Razorpay payment and create order
 router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, PaymentVerifyRequest>, res: Response) => {
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, items, shipping_address } = req.body;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, items, shipping, shipping_address } = req.body;
     const idempotencyKey = String(req.headers['idempotency-key'] || req.body.idempotency_key || '').trim();
     const userId = req.auth?.userId;
+    const shippingAddress = shipping || shipping_address;
+
+    console.log('Incoming Request:', req.body);
+    console.log('Shipping Data:', shippingAddress);
 
     if (!userId) {
       return res.status(401).json({ error: 'User ID not found' });
     }
 
-    await ensureUserExists(userId, req.auth?.email);
+    if (!shippingAddress) {
+      return res.status(400).json({ error: 'Shipping information is required' });
+    }
+
+    const normalizedShippingAddress = normalizeShippingAddress(shippingAddress, req.auth?.email);
+    if (!normalizedShippingAddress) {
+      return res.status(400).json({ error: 'Invalid shipping address' });
+    }
+
+    const userData = {
+      id: userId,
+      name: normalizedShippingAddress.fullName.trim(),
+      email: normalizedShippingAddress.email.trim().toLowerCase(),
+      phone: normalizedShippingAddress.phone?.trim() || null,
+    };
+
+    console.log('User Data Before Insert:', userData);
+
+    try {
+      await ensureUserExists(userId, userData.email, userData.name, userData.phone || undefined);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('Email is required')) {
+        return res.status(400).json({ error: e.message });
+      }
+      logger.warn('[PAYMENTS][verify] ensureUserExists failed: %o', e);
+    }
 
     const shasum = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET);
     shasum.update(`${razorpay_order_id}|${razorpay_payment_id}`);
@@ -254,7 +327,7 @@ router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, Payment
       return res.status(400).json({ error: 'Invalid payment signature' });
     }
 
-    const addressValidation = validateShippingAddress(shipping_address);
+    const addressValidation = validateShippingAddress(normalizedShippingAddress);
     if (!addressValidation.valid) {
       return res.status(400).json({ error: 'Invalid shipping address', details: addressValidation.errors });
     }
@@ -289,7 +362,7 @@ router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, Payment
 
       const requestHash = crypto
         .createHash('sha256')
-        .update(JSON.stringify({ razorpay_order_id, razorpay_payment_id, items, shipping_address }))
+        .update(JSON.stringify({ razorpay_order_id, razorpay_payment_id, items, shippingAddress }))
         .digest('hex');
 
       if (idempotencyKey) {
@@ -365,14 +438,15 @@ router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, Payment
       }
 
       const orderId = uuidv4();
-      const addressSnapshot = buildShippingAddressSnapshot(shipping_address);
-      // Resolve customer name/email with priority: shipping address -> users table -> null
+      const addressSnapshot = buildShippingAddressSnapshot(normalizedShippingAddress);
+      // Resolve customer name/email with priority: shipping address -> users table -> fallback
       const dbUserRow = (await client.query('SELECT name, email FROM users WHERE id = $1', [userId])).rows[0] || {};
-      const customerName = (addressSnapshot && addressSnapshot.name) || dbUserRow.name || null;
-      const customerEmail = (addressSnapshot && addressSnapshot.email) || dbUserRow.email || null;
+      const customerName = addressSnapshot.name || normalizedShippingAddress.fullName || dbUserRow.name || 'Customer';
+      const customerEmail = addressSnapshot.email || normalizedShippingAddress.email || dbUserRow.email || null;
       const orderSnapshot = items.map((item) => buildProductSnapshot(productMap.get(item.product_id), item.quantity));
       const estimatedDeliveryDate = estimateDeliveryDate(new Date(), maxDeliveryDays || 5);
       const merchantIds = Array.from(new Set(products.rows.map((product) => product.merchant_id).filter(Boolean)));
+      logger.info('[PAYMENTS][verify] resolved customerName=%s customerEmail=%s for user=%s', customerName, customerEmail, userId);
 
       try {
         await client.query(
@@ -390,7 +464,7 @@ router.post('/razorpay/verify', requireAuth, async (req: Request<{}, {}, Payment
             'razorpay',
             razorpay_payment_id,
             'captured',
-            JSON.stringify(shipping_address),
+            JSON.stringify(normalizedShippingAddress),
             JSON.stringify(addressSnapshot),
             JSON.stringify(orderSnapshot),
             estimatedDeliveryDate,
